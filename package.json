@@ -1,0 +1,61 @@
+{
+  "name": "dsh-tide-memory",
+  "version": "2.0.0",
+  "description": "潮汐记忆：给 DeepSeek Harness 的跨会话长期记忆。三问闸门过滤垃圾、记忆带归属与生命周期、状态会自动更新、项目删了记忆自动失效。SQLite + 双时间模型，零第三方依赖。",
+  "keywords": [
+    "dsh",
+    "dsh-bundle",
+    "deepseek-harness",
+    "memory",
+    "long-term-memory",
+    "agent-memory",
+    "sqlite"
+  ],
+  "license": "MIT",
+  "author": "jiulanyanyue-boop",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiulanyanyue-boop/dsh-tide-memory.git"
+  },
+  "homepage": "https://github.com/jiulanyanyue-boop/dsh-tide-memory#readme",
+  "bugs": {
+    "url": "https://github.com/jiulanyanyue-boop/dsh-tide-memory/issues"
+  },
+  "type": "module",
+  "main": "host.js",
+  "exports": {
+    ".": "./host.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "host.js",
+    "client.js",
+    "cordis.patch.yml",
+    "setup-python.ps1",
+    "README.md",
+    "README.en.md",
+    "WITHOUT-PYTHON.md",
+    "LICENSE",
+    "lib/*.py",
+    "lib/*.sql",
+    "lib/*.cmd",
+    "lib/prompts/*.md",
+    "lib/tools/*.mjs"
+  ]
+}

@@ -1,0 +1,11 @@
+# dsh-tide-memory 的 bundle patch 层。
+#
+# 作用：让宿主扫描到一个「已启用的 Loader 条目」——
+#   ① Host 半侧（host.js）被加载：注册 /plugins/dsh-tide-memory/api 路由，
+#      并在 agent/pre-step 注入记忆、在 session/event 采集真人消息；
+#   ② Client 半侧（client.js）作为客户端 bundle 提供给浏览器，注册设置页 section。
+#
+# 条目 id 同时是设置 slot 的 id（client.js 里 settings.section 的 id 用同一个字符串）。
+- insert:
+    - id: dsh-tide-memory
+      name: dsh-tide-memory

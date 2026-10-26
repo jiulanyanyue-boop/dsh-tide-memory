@@ -1,0 +1,50 @@
+# 依赖与本地产物
+node_modules/
+*.tgz
+.pnpm-debug.log*
+
+# ── Python 字节码：.pyc 里会嵌入构建机的绝对路径和用户名，绝不能提交 ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# ── 密钥与个人数据：绝对不能提交 ──
+llm.json
+config.json
+config.local.json
+*.db
+*.db-wal
+*.db-shm
+inbox*.jsonl
+memories.json
+scope-roots.json
+var/
+data/
+run.log
+
+# ── 导出产物：export.py 默认写到 ./memories/，含记忆全文和对话原文 ──
+memories/
+memories/*.md
+INDEX.md
+exports/
+
+# 用户自己的提示词覆盖
+prompts/local-*.md
+
+# ── 给 AI 的推送指南：绝不能提交 ──
+push.md
+PUSH.md
+.publish-notes.md
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
