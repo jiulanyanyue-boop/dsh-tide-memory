@@ -188,7 +188,7 @@ dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory
 Pin a version tag (safer):
 
 ```powershell
-dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory#v2.0.0
+dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory#v2.1.0
 ```
 
 Then **restart `dsh web`** once.

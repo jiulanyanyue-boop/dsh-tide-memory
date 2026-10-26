@@ -173,7 +173,7 @@ dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory
 装带版本 tag 的（更稳）：
 
 ```powershell
-dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory#v2.0.0
+dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory#v2.1.0
 ```
 
 装完**重启一次 `dsh web`**。
@@ -319,6 +319,23 @@ lib\mem.cmd llm set --base-url http://127.0.0.1:11434/v1 --model qwen2.5:7b
 
 ---
 
+## 自动更新与 Star 引导
+
+插件自带升级能力，设置页里有「插件升级」卡片：
+
+- **三个版本**：运行版本（本进程启动时加载的）、磁盘版本（当前文件）、最新版本（GitHub 最新 semver tag）
+- **检查更新**：走 GitHub 公开 API，Host 侧缓存 6 小时；页面「检查更新」按钮强制刷新
+- **立即升级**：按安装形态选路径 ——
+  - 目录里有 `.git`：`git fetch --tags` + `git reset --hard` + `git checkout --detach <tag>`
+  - 没有 `.git`：下载 tag 源码包解压覆盖（保留 `.git` / `node_modules` / `var` 等用户数据）
+- **重启提示**：升级只改磁盘，运行中的代码不会变，所以卡片会显示「代码已更新，重启 DSH 后生效」
+- **去 GitHub 点 Star**：调系统默认浏览器打开仓库页；只接受 `https://github.com/...`，不接受任意 URL
+
+要有更新源，`package.json` 里必须写真实仓库地址（`repository`）；占位符 `YOUR_GITHUB_USER` 会被识别为「无更新源」，
+卡片会如实显示而不是假装检查过。
+
+> 两个插件各自独立实现这套能力（各有一份 `update/status`、`update/apply`、`open-repo`），
+> 互不 import、不共享文件或状态，只共用「行为约定」这一层。
 ## 已知限制
 
 - **中文检索用 2-gram + 覆盖率打分**，不做向量召回。

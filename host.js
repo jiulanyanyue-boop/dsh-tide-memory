@@ -13,12 +13,12 @@
  * 数据库用 Node 24 内置的 node:sqlite，只读打开，不与 Python 侧写操作抢锁。
  */
 
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 
 export const name = 'dsh-tide-memory'
 /** 事件本身不需要额外服务；webServer 在 apply 里按需 inject（设置页 API）。 */
@@ -629,6 +629,296 @@ function startPythonInstall(config) {
 }
 
 // --------------------------------------------------------------------------- //
+// 自动更新 + Star 引导（自包含：只用 GitHub 公开 API 与本机 git/tar）
+//
+// 与 archive-manager 完全独立：不 import 对方，也不共用任何文件或状态。
+// --------------------------------------------------------------------------- //
+
+/** 更新检查缓存有效期：6 小时（与页面「自动检查：每 6 小时」一致）。 */
+const UPDATE_TTL_MS = 6 * 60 * 60 * 1000;
+/** Star 按钮只允许打开这些域名。 */
+const EXTERNAL_HOSTS = new Set(['github.com', 'www.github.com']);
+/** 覆盖升级时保留的东西：仓库元信息、依赖、用户数据、测试。 */
+const UPDATE_SKIP = new Set(['.git', 'node_modules', 'var', 'tests', '.backup', '.DS_Store']);
+
+/** 本进程启动时加载的版本（升级磁盘后不会变，用来判断「需不需要重启」）。 */
+const RUNTIME_VERSION = (() => {
+  try {
+    const manifest = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8'));
+    return typeof manifest.version === 'string' ? manifest.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+
+/** 更新检查的内存缓存（每个 Host 进程一份）。 */
+const updateState = {
+  checkedAt: 0,
+  repoSlug: null,
+  latestTag: null,
+  latestVersion: null,
+  error: null,
+  message: null,
+};
+
+function readSelfManifest() {
+  try {
+    return JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function diskVersion() {
+  const manifest = readSelfManifest();
+  return manifest !== null && typeof manifest.version === 'string' ? manifest.version : RUNTIME_VERSION;
+}
+
+/**
+ * 从 package.json 的 repository 解析 GitHub 仓库；占位符视为「没有更新源」。
+ */
+function resolveUpdateRepo() {
+  const manifest = readSelfManifest();
+  if (manifest === null) return null;
+  const raw = manifest.repository;
+  const url = typeof raw === 'string' ? raw : typeof raw?.url === 'string' ? raw.url : null;
+  if (url === null) return null;
+  const match = /github\.com[/:]([^/\s]+)\/([^/#\s]+)/i.exec(url);
+  if (match === null) return null;
+  const owner = match[1];
+  const repo = match[2].replace(/\.git$/i, '').replace(/[.,;]+$/, '');
+  if (/^(your[_-]?github[_-]?user|your[_-]?name|owner|user|example)$/i.test(owner)) return null;
+  return { owner, repo, slug: owner + '/' + repo, htmlUrl: 'https://github.com/' + owner + '/' + repo };
+}
+
+function parseVersion(value) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(value ?? '').trim());
+  if (match === null) return null;
+  return { parts: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4] ?? '' };
+}
+
+function compareVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (a === null || b === null) return 0;
+  for (let index = 0; index < 3; index += 1) {
+    if (a.parts[index] !== b.parts[index]) return a.parts[index] - b.parts[index];
+  }
+  if (a.pre === b.pre) return 0;
+  if (a.pre === '') return 1;
+  if (b.pre === '') return -1;
+  return a.pre < b.pre ? -1 : 1;
+}
+
+/** 问 GitHub 要仓库里最新的 semver tag。 */
+async function fetchLatestTag(repo) {
+  const response = await fetch('https://api.github.com/repos/' + repo.slug + '/tags?per_page=100', {
+    headers: { accept: 'application/vnd.github+json', 'user-agent': name + '/update-check' },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!response.ok) throw new Error('GitHub API ' + response.status);
+  const payload = await response.json();
+  if (!Array.isArray(payload)) throw new Error('GitHub API：返回了非预期结构');
+  let best = null;
+  for (const entry of payload) {
+    const tag = typeof entry?.name === 'string' ? entry.name : '';
+    if (parseVersion(tag) === null) continue;
+    if (best === null || compareVersions(tag, best.tag) > 0) best = { tag, version: tag.replace(/^v/i, '') };
+  }
+  return best;
+}
+
+/** 组装前端要的状态。 */
+function updateStatus(repo) {
+  const disk = diskVersion();
+  const latest = updateState.latestVersion;
+  const baseline = compareVersions(disk, RUNTIME_VERSION) >= 0 ? disk : RUNTIME_VERSION;
+  return {
+    ok: updateState.error === null,
+    packageName: name,
+    runtimeVersion: RUNTIME_VERSION,
+    diskVersion: disk,
+    latestVersion: latest,
+    latestTag: updateState.latestTag,
+    checkedAt: updateState.checkedAt > 0 ? new Date(updateState.checkedAt).toISOString() : null,
+    ttlMs: UPDATE_TTL_MS,
+    repo: repo?.slug ?? null,
+    htmlUrl: repo?.htmlUrl ?? null,
+    canSelfUpdate: repo !== null,
+    updateAvailable: latest !== null && compareVersions(latest, baseline) > 0,
+    restartRequired: compareVersions(disk, RUNTIME_VERSION) > 0,
+    error: updateState.error,
+    message: updateState.message,
+  };
+}
+
+/** 检查更新（默认走 6 小时缓存）。 */
+async function checkUpdate(force) {
+  const repo = resolveUpdateRepo();
+  if (repo === null) {
+    return {
+      ...updateStatus(null),
+      ok: false,
+      canSelfUpdate: false,
+      message: 'package.json 里还没有配置真实的 repository 地址，无法检查更新。',
+    };
+  }
+  const fresh = updateState.checkedAt > 0
+    && updateState.repoSlug === repo.slug
+    && Date.now() - updateState.checkedAt < UPDATE_TTL_MS;
+  if (fresh && force !== true) return updateStatus(repo);
+
+  try {
+    const latest = await fetchLatestTag(repo);
+    updateState.checkedAt = Date.now();
+    updateState.repoSlug = repo.slug;
+    updateState.latestTag = latest?.tag ?? null;
+    updateState.latestVersion = latest?.version ?? null;
+    updateState.error = null;
+    updateState.message = latest === null ? '仓库里还没有可用的版本 tag。' : null;
+  } catch (error) {
+    updateState.checkedAt = Date.now();
+    updateState.repoSlug = repo.slug;
+    updateState.error = error instanceof Error ? error.message : String(error);
+    updateState.message = null;
+  }
+  return updateStatus(repo);
+}
+
+/** 跑一个外部命令（git / tar），不走 shell。 */
+function runTool(command, args, cwd) {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 120000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  return {
+    ok: result.status === 0 && result.error === undefined,
+    code: result.status,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? (result.error !== undefined ? String(result.error.message) : ''),
+  };
+}
+
+/** 递归复制目录树。 */
+function copyTree(source, destination, skip) {
+  let count = 0;
+  const walk = (from, to) => {
+    mkdirSync(to, { recursive: true });
+    for (const entry of readdirSync(from, { withFileTypes: true })) {
+      if (skip.has(entry.name)) continue;
+      const sourcePath = join(from, entry.name);
+      const targetPath = join(to, entry.name);
+      if (entry.isDirectory()) walk(sourcePath, targetPath);
+      else if (entry.isFile()) {
+        copyFileSync(sourcePath, targetPath);
+        count += 1;
+      }
+    }
+  };
+  walk(source, destination);
+  return count;
+}
+
+/** 有 .git 时：fetch + checkout 到 tag。 */
+function applyViaGit(directory, tag) {
+  const fetched = runTool('git', ['fetch', '--tags', '--force', 'origin'], directory);
+  if (!fetched.ok) return { ok: false, error: 'git-fetch-failed', detail: fetched.stderr.trim().slice(0, 400) };
+  // 用户很可能改过 package.json（例如手填仓库地址）；先硬还原，否则 checkout 会因本地改动而中止。
+  // 插件源码以仓库为准；用户数据在 var/ 与 .gitignore 之外，不受这次还原影响。
+  const reset = runTool('git', ['reset', '--hard', 'HEAD'], directory);
+  if (!reset.ok) return { ok: false, error: 'git-reset-failed', detail: reset.stderr.trim().slice(0, 400) };
+  const checkout = runTool('git', ['checkout', '--detach', tag], directory);
+  if (!checkout.ok) return { ok: false, error: 'git-checkout-failed', detail: checkout.stderr.trim().slice(0, 400) };
+  return { ok: true, method: 'git' };
+}
+
+/** 没有 .git 时：下载 tag 源码包覆盖插件文件（保留 .git / node_modules / var / tests）。 */
+async function applyViaTarball(directory, repo, tag) {
+  const staging = mkdtempSync(join(tmpdir(), 'dsh-tide-memory-update-'));
+  try {
+    const archivePath = join(staging, 'source.tar.gz');
+    const url = 'https://codeload.github.com/' + repo.slug + '/tar.gz/refs/tags/' + encodeURIComponent(tag);
+    const response = await fetch(url, {
+      headers: { 'user-agent': name + '/update' },
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!response.ok) return { ok: false, error: 'download-failed-' + response.status };
+    writeFileSync(archivePath, Buffer.from(await response.arrayBuffer()));
+
+    const extracted = runTool('tar', ['-xzf', archivePath, '-C', staging], staging);
+    if (!extracted.ok) return { ok: false, error: 'extract-failed', detail: extracted.stderr.trim().slice(0, 400) };
+
+    const root = readdirSync(staging, { withFileTypes: true }).find((entry) => entry.isDirectory());
+    if (root === undefined) return { ok: false, error: 'empty-archive' };
+
+    const files = copyTree(join(staging, root.name), directory, UPDATE_SKIP);
+    return { ok: true, method: 'tarball', files };
+  } finally {
+    try {
+      rmSync(staging, { recursive: true, force: true });
+    } catch {
+      /* 清不掉临时目录不影响结果 */
+    }
+  }
+}
+
+/** 执行升级。 */
+async function applyUpdate() {
+  const status = await checkUpdate(true);
+  if (status.canSelfUpdate !== true) {
+    return { ok: false, error: 'no-update-source', message: status.message ?? '没有可用的更新源。' };
+  }
+  if (status.latestTag === null) {
+    return { ok: false, error: 'no-release', message: status.message ?? '仓库里还没有可用的版本 tag。' };
+  }
+  if (!status.updateAvailable) {
+    return {
+      ok: true,
+      alreadyLatest: true,
+      from: status.diskVersion,
+      to: status.latestVersion,
+      restartRequired: status.restartRequired,
+      method: 'none',
+      message: status.restartRequired ? '代码已更新，重启 DSH 即可生效。' : '已经是最新版本。',
+    };
+  }
+  const repo = resolveUpdateRepo();
+  const hasGit = existsSync(join(PKG_ROOT, '.git'));
+  const result = hasGit ? applyViaGit(PKG_ROOT, status.latestTag) : await applyViaTarball(PKG_ROOT, repo, status.latestTag);
+  return {
+    ...result,
+    from: status.diskVersion,
+    to: status.latestVersion,
+    restartRequired: result.ok === true,
+  };
+}
+
+/** 用系统默认浏览器打开 github.com 链接（只允许 https + github.com）。 */
+function openExternalUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl));
+  } catch {
+    return { ok: false, error: 'bad-url' };
+  }
+  if (parsed.protocol !== 'https:' || !EXTERNAL_HOSTS.has(parsed.hostname)) {
+    return { ok: false, error: 'unsupported-url' };
+  }
+  const command = process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const args = process.platform === 'win32' ? ['/c', 'start', '', parsed.href] : [parsed.href];
+  try {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+    return { ok: true, url: parsed.href };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// --------------------------------------------------------------------------- //
 // API 防护
 //
 // 宿主的 webServer.register() 不做任何鉴权：它只按路径查表然后调 handler。
@@ -865,6 +1155,29 @@ export function apply(ctx) {
               if (payload && payload.op === 'python_install') {
                 const reply = await startPythonInstall(config)
                 res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify(reply))
+                return
+              }
+
+              // ── 自动更新与 Star 引导：同样不依赖 Python，没有 Python 时也能响应
+              if (payload && payload.op === 'update_status') {
+                const reply = await checkUpdate(payload.force === true)
+                res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify(reply))
+                return
+              }
+              if (payload && payload.op === 'update_apply') {
+                const reply = await applyUpdate()
+                res.writeHead(reply.ok === true ? 200 : 500, { 'content-type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify(reply))
+                return
+              }
+              if (payload && payload.op === 'open_repo') {
+                const repo = resolveUpdateRepo()
+                const reply = repo === null
+                  ? { ok: false, error: 'no-repository', message: '还没有配置仓库地址。' }
+                  : openExternalUrl(repo.htmlUrl)
+                res.writeHead(reply.ok === true ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
                 res.end(JSON.stringify(reply))
                 return
               }

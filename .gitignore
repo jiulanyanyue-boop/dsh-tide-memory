@@ -48,3 +48,8 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+# ── 发布说明：只存在于本机「下载」目录，绝不提交 ──
+update.md
+UPDATE.md
+Update.md
+*.update.md
