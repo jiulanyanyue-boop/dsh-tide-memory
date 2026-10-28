@@ -45,9 +45,9 @@ dsh-tide-memory is built against those four.
 
 ## Four design decisions
 
-### ① A three-question gate — ask whether it deserves to be remembered
+### ① A five-question gate — ask whether it deserves to be remembered
 
-Every candidate passes three questions before it can enter the store.
+Every candidate passes five questions before it can enter the store.
 Fail any one and it's rejected (audited, not stored):
 
 | Question | What it filters out |
@@ -55,12 +55,21 @@ Fail any one and it's rejected (audited, not stored):
 | **Is the subject clear?** | "The current plugin needs care" → which plugin? No name, rejected |
 | **Does it stand alone?** | "You could also self-check... overall conclusion: the current plugin..." → conversational fragment, rejected |
 | **Is this fact or instruction?** | "After you finish changing it" → that's a task, not a fact, rejected |
+| **Is it reusable?** | "Just changed line 3", "next I'll look at client.js", "tests are done" → process and to-dos, rejected |
+| **Is it free of time anchors?** | "Using neovim today" only holds right now — unless it adds "from now on / always / as a habit" |
 
-Plus three hard checks: the predicate must match `[a-z][a-z0-9_]{1,40}`,
-the value must be ≤ 60 chars, and it can't be empty talk ("be careful").
+Plus four hard checks: the predicate must match `[a-z][a-z0-9_]{1,40}`,
+the value must be ≤ 60 chars, it can't be empty talk ("be careful"), and it
+can't be temp-path noise (`…\Temp\tmpXXXX`).
+
+**Key trade-off**: sentences carrying a *conclusion back-reference* —
+"was caused by / root cause / must / already fixed" — are let through. They state
+the causal conclusion of something that already happened, which is exactly the
+knowledge worth keeping. A process word elsewhere in the sentence must not kill them.
 
 **Measured**: a real junk memory was caught by `no-context`; normal memories in the
-same batch went through.
+same batch went through. Auditing the 52 stored memories against the new gate
+rejected only 2.
 
 ### ② Ownership — every memory knows which project it belongs to
 
@@ -188,7 +197,7 @@ dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory
 Pin a version tag (safer):
 
 ```powershell
-dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory#v2.1.0
+dsh plugin --profile web add github:jiulanyanyue-boop/dsh-tide-memory#v2.2.0
 ```
 
 Then **restart `dsh web`** once.
@@ -197,6 +206,112 @@ Then **restart `dsh web`** once.
 > `dsh plugin add` resolves a bare name against the npm registry. If someone
 > already owns that name you'll install their package, which may be incompatible
 > with your DSH version.
+
+### Manual install (offline bundle / another machine)
+
+You get a `dsh-tide-memory` directory (pure source, no `node_modules`). It can live
+**anywhere** — the plugin never depends on its own location; every data path derives
+from `DSH_HOME`. Steps:
+
+**1. Place the plugin** (anywhere you like; `<plugin-dir>` below refers to it)
+
+```powershell
+# Example: under the harness home's plugins directory
+Move-Item <extracted dsh-tide-memory> "$env:USERPROFILE\.dsh\plugins\dsh-tide-memory"
+```
+
+**2. Make the profile aware of it**
+
+Edit `<DSH_HOME>\profiles\<your-profile>\package.json` (usually `profiles\desktop\package.json`):
+
+```jsonc
+{
+  "dependencies": {
+    // add this line: the path after link: is the absolute path from step 1
+    "dsh-tide-memory": "link:<plugin-dir>"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        // add this line to the end of the array
+        "dsh-tide-memory"
+      ]
+    }
+  }
+}
+```
+
+**3. Sync the dependency tree** (run inside the profile directory; use the `pnpm`
+bundled with DSH if you don't have one)
+
+```powershell
+pnpm install
+```
+
+**4. Restart DSH**, then check **Settings → Memory**.
+
+**5. No Python? Fine.** Capture and injection still work; only automatic
+consolidation is unavailable. On first start a dialog offers a one-click Python
+install (official installer, current user only, no admin rights).
+
+### It just works — nothing more to configure
+
+Do these three things and memory starts **capturing and consolidating itself**:
+
+| # | Do this | Why |
+|---|---|---|
+| 1 | Install the plugin (either method above) | The host only attaches the event hooks once host.js is loaded |
+| 2 | Have Python 3.10+ | Capture and injection are pure JS, but **consolidation** needs Python; a one-click installer appears on first start if missing |
+| 3 | Restart DSH | host.js / client.js load at startup |
+
+After that, **every new session is automatic** — no per-session action, ever:
+
+- what you say → captured into the inbox (tagged with its origin workspace)
+- related topics → memory returns to context (as an injected *user* message, not a system prompt)
+- session start → your user profile comes along
+- inbox fills up → **extracted and consolidated automatically**, snapshot refreshed
+  (`autoConsolidate`, on by default, zero configuration)
+
+> **Why this isn't MCP**: this is a DSH **host plugin**, driven by host event hooks
+> (`agent/pre-step` to inject, `session/event` to capture). The model never sees it,
+> so there is no MCP server to register and no tool call for the model to make.
+
+**The one manual step**: if you want LLM extraction (recommended), re-enter your API key
+on the settings page — the ciphertext is DPAPI-bound to the current Windows user and cannot
+be decrypted on another machine (a deliberate security property).
+
+### Consolidation cadence (tunable, but you don't need to)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `autoConsolidate` | `true` | Master switch; `false` returns to manual / externally scheduled runs |
+| `autoConsolidateDelayMs` | `60000` | First run this long after startup |
+| `autoConsolidateIntervalMs` | `1800000` | How often to check afterwards (30 min) |
+| `autoConsolidateMinEntries` | `1` | Minimum inbox entries worth spawning Python for |
+| `autoConsolidateMinIntervalMs` | `300000` | Minimum gap between two runs (avoids respawning) |
+
+Put them in `$DSH_HOME/dsh-tide-memory.json`; defaults apply otherwise.
+
+### Want a fixed schedule? Add a task (optional)
+
+The built-in auto-consolidation is enough. If you want it to run at a **fixed time**
+(for example nightly, together with lifecycle maintenance), add a DSH scheduled task:
+
+```text
+Run the daily memory consolidation task:
+
+1. Run <plugin-dir>\lib\mem.cmd flush-inbox --llm
+   (consume inbox.jsonl, extract and consolidate — this is the main step)
+2. Then run <plugin-dir>\lib\mem.cmd maintain
+   (check dependencies and TTL, expire what no longer holds)
+3. Report: candidate count, action stats (insert/merge/invalidate/skip), expired count.
+
+Constraint: never edit the store by hand, never touch memory.db directly.
+```
+
+Without an LLM configured, drop `--llm` from step 1 (rule-based, offline).
+**They coexist peacefully** — the Python side deduplicates by fingerprint, so consuming
+the same inbox twice never produces duplicate memories.
 
 ### Requirements
 
@@ -219,7 +334,8 @@ memory.db          # the store (SQLite)
 memories.json      # recall snapshot (the plugin reads this)
 inbox.jsonl        # captured raw material
 scope-roots.json   # project path registry
-llm.json           # LLM config (if configured)
+llm.json           # LLM config (base_url / model, **never the key**)
+llm.secret         # encrypted key (DPAPI-bound to the current Windows user)
 ```
 
 **No path is hardcoded** — everything derives from `DSH_HOME` or `~/.dsh`,
@@ -239,8 +355,29 @@ The plugin hooks host events, so **capture and injection are fully automatic**:
 
 ### Settings page
 
-**Settings → Memory** lets you browse every memory (including candidates and
-expired ones), add / edit / delete (audited), and see engine status.
+**Settings → Memory** lets you:
+
+- browse memories grouped by workspace (current workspace / other workspaces / user profile)
+- add / edit / delete (audited; edits and deletes across workspaces are refused)
+- **read the engine status**: see at a glance whether extraction currently runs in
+  **LLM mode** or **rule-engine mode**, with the checks behind that verdict
+- **Test generation**: runs a full extract + consolidate pass and leaves
+  **no real memory behind** — proof that the engine is actually working
+- configure the LLM and API key (the key is stored encrypted; the panel only ever
+  shows a mask)
+
+### Workspace isolation
+
+Every memory is bound to the workspace it was born in. Inside one workspace you see:
+
+| Visible | Meaning |
+|---|---|
+| memories of the **current workspace** | conclusions reached here |
+| the **user profile** (`global`) | name, job, general preferences — needed everywhere |
+| ❌ memories of other workspaces | the panel shows "N more elsewhere" but **never their content** |
+
+When the current workspace cannot be determined (headless host, for example) it
+**fails closed**: only the user profile is released, never another project's content.
 
 ### CLI
 
@@ -268,7 +405,15 @@ lib\mem.cmd stats
 ### Configure an LLM (optional, recommended)
 
 It works without one (rule-based, offline). With one, extraction and conflict
-resolution get noticeably better:
+resolution get noticeably better.
+
+**The recommended way is the settings page** (Settings → Memory → consolidation engine):
+
+1. fill in `base_url` and `model`
+2. paste the API key into the plain-text field and click **Save key**
+3. the field clears immediately and the panel only ever shows the last 4 characters
+
+The command line works too:
 
 ```powershell
 lib\mem.cmd llm set --base-url https://api.deepseek.com/v1 --model deepseek-chat
@@ -292,10 +437,26 @@ lib\mem.cmd llm set --base-url http://127.0.0.1:11434/v1 --model qwen2.5:7b
 ```
 
 Remote LLM endpoints must use HTTPS. Cleartext HTTP is accepted only for `localhost` or a loopback IP address (for example, local Ollama).
-The key config file is restricted to the current user on Unix and to the current user, SYSTEM, and Administrators on Windows; saving fails and removes the config if permissions cannot be applied.
+
+#### How the key is stored
+
+| Platform | Mechanism |
+|---|---|
+| Windows | **DPAPI** (`CryptProtectData`), bound to the **current Windows user** — another machine or another user cannot decrypt it |
+| Other | random 32-byte master key file (0600) + HMAC-SHA256 stream cipher + encrypt-then-MAC |
+
+- `llm.json` holds **only** `base_url` / `model` / `timeout` / `retries` — **never the key**
+- the ciphertext file `llm.secret` has its ACL narrowed to the current user, SYSTEM and
+  Administrators; if permissions cannot be applied, saving aborts and removes the file
+- **no API response ever carries the plaintext**; the panel only shows a mask (last 4 chars)
+- upgrading from an older version: a plaintext `api_key` still sitting in `llm.json` is
+  migrated into the ciphertext and the old field is erased
+- when the ciphertext cannot be decrypted it reports `decryptable: false` instead of
+  pretending everything is configured
 
 **A failing model never corrupts the store**: timeout, disconnect, invalid JSON,
-out-of-range target → all fall back to rule-based decisions.
+out-of-range target → all fall back to rule-based decisions. To see which engine is
+*actually* in use, read the engine badge on the settings page or press **Test generation**.
 
 ---
 
@@ -322,9 +483,10 @@ What we actually did:
 | Area | Approach |
 |---|---|
 | **Data location** | Everything under `$DSH_HOME`; nothing in the plugin dir or system dirs |
+| **Workspace isolation** | Every memory carries its origin workspace; recall only releases "current workspace + user profile", and fails closed when the workspace is unknown |
 | **HTTP endpoint** | Three gates: loopback Host allowlist (anti DNS-rebinding) + Origin check + CSRF token |
 | **Installer** | Authenticode signature check that **aborts on failure**; current user only, no system dirs |
-| **Secrets** | `$DSH_HOME/dsh-tide-memory/llm.json` (0600), gitignored; env vars supported for no-disk mode |
+| **Secrets** | Windows: **DPAPI**-encrypted `llm.secret` (bound to the current user). `llm.json` never holds the key; API responses only carry a last-4-chars mask |
 | **Export** | Defaults to `$DSH_HOME`, never the plugin dir; gitignored |
 | **Network** | Zero network without an LLM; with one, only extraction/conflict resolution sends fragments to your endpoint |
 
@@ -345,10 +507,20 @@ What we actually did:
   Synonyms ("write code with neovim" vs "editor is nvim") aren't recognized yet.
 - **Single-process SQLite (WAL)**: fine for personal use; concurrent multi-process
   writes would need a serialized queue.
-- **Rule-based extraction is deliberately conservative**: task-oriented sessions
-  often yield nothing. Use LLM extraction for production quality.
-- **Scope resolution is rule-based**: complex cross-project cases may need an
-  explicit `--scope` / `--path`.
+- **Rule-based extraction covers the common conclusive patterns** (used when no LLM is
+  configured): first-person preferences, `X uses Y`, `X is Y`, must/needs, zero-dependency
+  constraints, causal conclusions, status changes — 10 of 12 typical conclusions recognised
+  in testing. It deliberately does **not** do semantic judgement: sentences like
+  "my main IDE is…" need a decision about which attribute they describe (job? preference?),
+  and guessing there would merge unrelated attributes, so those wait for the LLM.
+- **Scope resolution is rule-based**: project identity prefers a git remote or a
+  project root; a standalone directory (e.g. `~/.dsh/plugins/xxx`) counts as its own
+  project rather than belonging to a workspace. That is intentional fail-closed
+  behaviour — better to recall less than to leak across projects. Complex cases can
+  pass `--scope` / `--path` explicitly.
+- **DPAPI does not travel**: on Windows the key ciphertext is bound to the current
+  user, so another machine or user must save the key again. That is a deliberate
+  security trade-off, not a bug.
 
 ---
 
@@ -356,10 +528,10 @@ What we actually did:
 
 | | |
 |---|---|
-| Size | ~5,100 lines (3,600 Python + 1,500 JS) |
-| Tests | 63 unit tests, all passing |
+| Size | ~9,900 lines (6,200 Python + 3,700 JS) |
 | Runtime deps | **0** npm packages, **0** pip packages |
-| Storage | SQLite + FTS5 (Node 22.5+ builtin `node:sqlite`) |
+| Storage | SQLite + FTS5 (Node 22.5+ builtin `node:sqlite`); falls back to the JSON snapshot when the host lacks `node:sqlite` |
+| Verification | 4 suites (host isolation 20 / panel rendering 24 / engine & key 29 / zero side-effects 8) = 81 checks; **the scripts ship separately, not with the plugin** |
 | DSH | `0.2.1+` |
 
 ### Measured results

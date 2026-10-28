@@ -318,12 +318,13 @@ def resolve_scope_from_cwd(
     if predicate in USER_PREDICATES:
         return Scope(SCOPE_GLOBAL, "")
     if predicate in ENV_PREDICATES:
-        return Scope(SCOPE_WORKSPACE, workspace_ref(cwd) if cwd else "")
+        # 没有 cwd 时不产出「空 scope_ref 的 workspace」——
+        # 那种记忆在召回侧永远匹配不上任何 ref，等于写进去就消失。
+        ref = workspace_ref(cwd) if cwd else ""
+        return Scope(SCOPE_WORKSPACE, ref) if ref else Scope(SCOPE_GLOBAL, "")
     if cwd:
         return Scope(SCOPE_PROJECT, project_ref(cwd))
     # 没有任何归属信息：只能是全局。宁可范围大，也不能错绑到别的项目。
-    if subject == "user":
-        return Scope(SCOPE_GLOBAL, "")
     return Scope(SCOPE_GLOBAL, "")
 
 
@@ -334,7 +335,20 @@ def resolve_scope(
     cwd: str = "",
     mentioned_path: str = "",
 ) -> Scope:
-    """判定一条记忆该归属到哪。规则优先，不让模型猜。"""
+    """判定一条记忆该归属到哪。规则优先，不让模型猜。
+
+    ⚠️ 关键修正（本次）：**不能靠 `subject == 'user'` 判 global**。
+    抽取器给绝大多数候选填的 subject 都是 `user`（「用户提到……）」），
+    于是「这个项目的更新检查必须多源回退」这类**项目级结论**全被误判成 global，
+    结果项目 A 的结论漏进了项目 B 的会话——这正是要消灭的跨工作区污染。
+
+    新的优先级：
+      1. 明确是用户画像键 → global（跨项目通用的偏好/身份）
+      2. 环境类键           → workspace
+      3. 状态类键           → project（有路径）/ workspace
+      4. 有 cwd             → project（项目级结论就该跟项目走）
+      5. 什么都没            → global（无法判定时范围最小地保守处理）
+    """
     if predicate in USER_PREDICATES:
         return Scope(SCOPE_GLOBAL, "")
     if predicate in ENV_PREDICATES:
@@ -346,13 +360,15 @@ def resolve_scope(
             return Scope(SCOPE_PROJECT, project_ref(mentioned_path))
         ref = workspace_ref(cwd) if cwd else ""
         return Scope(SCOPE_WORKSPACE, ref)
-    # 其它：按 subject 兜底
-    if subject == "user":
-        return Scope(SCOPE_GLOBAL, "")
+    # 有路径线索：项目级
     if mentioned_path:
         return Scope(SCOPE_PROJECT, project_ref(mentioned_path))
-    ref = workspace_ref(cwd) if cwd else ""
-    return Scope(SCOPE_WORKSPACE, ref)
+    # 有 cwd：这条结论是在某个工作区里得出的，就该留在这个工作区，
+    # 不能再因为 subject=user 而无差别升级成 global。
+    if cwd:
+        return Scope(SCOPE_PROJECT, project_ref(cwd))
+    # 真的没有任何归属线索：范围最小地保守处理
+    return Scope(SCOPE_GLOBAL, "")
 
 
 # --------------------------------------------------------------------------- #
@@ -445,6 +461,100 @@ class GateResult:
     code: str = "ok"
 
 
+#: 过程性句式（正则）。**只认真正描述「进行中/未完成」的句式**，
+#: 而不是简单包含「先跑」「现在」这类词——「必须先跑 lint」是规律，不是过程。
+_PROCESS_PATTERNS = tuple(
+    re.compile(p) for p in (
+        r"^(?:刚才|刚刚|现在|目前|正在|暂时|临时)(?!.*(?:用|是|总是|习惯))",
+        r"(?:下一步|接下来)(?:要|再|去|看|做|改|处理)?",
+        r"(?:等会儿|稍后|待会|回头)(?:再|要|去|看|做|改|处理)",
+        # 「打算/准备/计划」只有在**句首**才是计划叙述；
+        # 「附英文版，同时准备中文简介」里的「准备」是动作，不是计划。
+        r"^(?:打算|准备|计划|想要|想先)",
+        r"(?:，|。|,|^)\s*(?:打算|准备|计划)(?:把|去|要|在|将)",
+        r"(?:还没|尚未|未)(?:有|做|改|写|跑|看|处理|完成|确认|验证|定|测)",
+        r"(?:还没|尚未|未)(?=[^\s]{1,12})",
+        r"(?:跑|改|写|做|测|看)(?:完|完了|好了|到第)",
+        r"已经(?:.{0,8}?)(?:了)$",
+        r"(?:先|再)(?:试|跑|看|改)(?:一下|一遍|看看)",
+        r"(?:正在|在)(?:排查|调试|尝试|试|写|改|跑)",
+    )
+)
+
+#: 结论性回指：句子里出现这些词，说明它讲的是**已经发生过的事的结论**，
+#: 而不是「现在正在做」——即使含过程词也应放行。
+#: 例：「归档→恢复→删除的操作序列曾导致残留，原因是链路未清理」
+#:     「曾导致」是已完成因果，属于可复用经验。
+_CONCLUSION_MARKERS = (
+    "曾导致", "曾经", "导致过", "原因", "根因", "根本原因", "教训", "经验",
+    "因此", "所以必须", "必须", "需要保证", "结论", "规律", "修复后", "已修复",
+    "曾经导致", "引发", "造成了",
+)
+
+#: 时间锚：带这些词意味着「只在此刻成立」，脱离上下文就没意义。
+#: 注意「今天开始用 neovim」这类能归一化成一辈子的偏好，靠 CONTEXTUAL_TENSE
+#: 排除：只有「今天/这次」而没有「以后/长期/一直」才判为带锚。
+TIME_ANCHORS = (
+    "今天", "昨天", "今晚", "今早", "这次", "本次", "这回", "上次", "上回",
+    "这一轮", "本轮", "刚才那条", "上面那条", "前面提到",
+)
+
+#: 长期性标记：和 TIME_ANCHORS 同时出现时视为「由时间点引入的长期结论」，放行
+LONGTERM_MARKERS = (
+    "以后", "长期", "一直", "今后", "从现在", "永久", "习惯", "每次", "总是",
+)
+
+#: 对话碎片：整句就是这些词，没有任何信息
+CHAT_FRAGMENTS = {
+    "好的", "好", "嗯", "哦", "ok", "okay", "继续", "收到", "明白", "了解",
+    "开始吧", "来吧", "可以", "不行", "对的", "是的", "不对", "没错",
+    "谢谢", "多谢", "辛苦了", "麻烦了", "你好", "在吗",
+}
+
+#: 临时路径特征：从 Temp 目录里学到的东西不具复用价值
+_TEMP_PATH_RE = re.compile(
+    r"(?:\\|/)Temp(?:\\|/)|(?:\\|/)tmp[0-9a-z_]{4,}|AppData\\Local\\Temp",
+    re.IGNORECASE,
+)
+
+
+def _is_chat_fragment(text: str) -> bool:
+    t = re.sub(r"[\s。，！？、,.!?~～…]+", "", (text or "").lower())
+    return bool(t) and t in CHAT_FRAGMENTS
+
+
+def _is_process_narrative(text: str) -> bool:
+    """过程叙述：正在做 / 还没做 / 下一步做什么。这类不可复用。
+
+    但「曾导致 / 根因 / 必须 / 已修复」这类**结论回指**要放行：
+    它们讲的是已发生事件的因果结论，恰恰是最该记的那种经验。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if any(m in t for m in _CONCLUSION_MARKERS):
+        return False
+    return any(p.search(t) for p in _PROCESS_PATTERNS)
+
+
+def _has_time_anchor(text: str) -> bool:
+    """带时间锚 = 只在此刻成立。
+
+    「今天开始用 neovim，以后都这样」不算——它有时间词，但结论是长期的：
+    句子里同时出现长期性标记时放行，否则一律按「只在此刻成立」丢弃。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if not any(a in t for a in TIME_ANCHORS):
+        return False
+    return not any(m in t for m in LONGTERM_MARKERS)
+
+
+def _is_temp_noise(text: str) -> bool:
+    return bool(_TEMP_PATH_RE.search(text or ""))
+
+
 def worth_remembering(
     *,
     kind: str,
@@ -453,7 +563,11 @@ def worth_remembering(
     content: str,
     quote: str = "",
 ) -> GateResult:
-    """三问闸门。任何一问不过就不该进库。"""
+    """五问闸门。任何一问不过就不该进库。
+
+    比旧版多两问（可复用 / 无时间锚），因为旧版放行了大量
+    「刚才改到第 3 行」这类过程叙述，把库塞成了流水账。
+    """
     text = f"{obj} {content}".strip()
 
     # 问 1：主语清楚吗？
@@ -468,6 +582,20 @@ def worth_remembering(
     if _looks_like_instruction(text, quote):
         return GateResult(False, "这是对话/指令，不是可复述的事实", "instruction")
 
+    # 问 4：可复用吗？——过程叙述与对话碎片一律丢
+    if _is_chat_fragment(obj) or _is_chat_fragment(content):
+        return GateResult(False, "对话碎片：没有可复用的信息", "fragment")
+    # 结论回指要看「object + content」整体：object 常常只是个短语
+    #（如「链路未清理」），结论性其实在 content 里（「曾导致…根因…」）。
+    if any(m in text for m in _CONCLUSION_MARKERS):
+        pass  # 整条是结论，跳过过程判定
+    elif _is_process_narrative(content) or _is_process_narrative(obj):
+        return GateResult(False, "过程叙述：正在做/还没做，不是结论", "process")
+
+    # 问 5：无时间锚吗？
+    if _has_time_anchor(obj) or _has_time_anchor(content):
+        return GateResult(False, "带时间锚：只在此刻成立，下次用不上", "time-anchored")
+
     # 附加：键名必须是合法谓词
     if not re.fullmatch(r"[a-z][a-z0-9_]{1,40}", predicate or ""):
         return GateResult(False, f"谓词不合法（不是英文小写键）：{predicate!r}", "bad-predicate")
@@ -476,9 +604,16 @@ def worth_remembering(
     if len((obj or "").strip()) > 60:
         return GateResult(False, f"object 过长（{len(obj)}字），不像是一个值", "long-object")
 
+    # 附加：不能是临时目录噪音
+    if _is_temp_noise(text):
+        return GateResult(False, "临时路径噪音：不具复用价值", "temp-noise")
+
     # 附加：不能是空话
     if _is_vapid(obj) or _is_vapid(content):
         return GateResult(False, "空话：只有态度没有事实", "vapid")
+    # 附加：值本身就是纯态度词（「必须小心」抽出的那个「小心」）
+    if (obj or "").strip() in VAPID_WORDS:
+        return GateResult(False, "空话：值只有态度没有事实", "vapid")
 
     return GateResult(True, "ok")
 
@@ -513,6 +648,13 @@ VAPID_TAILS = (
     "要小心", "注意点", "得注意", "很重要", "别搞错", "当心", "要留意",
     "要记住", "别忘了", "小心点", "多注意",
 )
+
+#: 纯态度词：整个值就是这些，等于什么都没说。
+#: 闸门里兜底——不管规则还是 LLM 抽出这些词都该拦。
+VAPID_WORDS = {
+    "小心", "注意", "当心", "留意", "谨慎", "认真", "仔细", "严谨", "用心",
+    "重视", "关注", "在意", "上心", "留神", "警惕",
+}
 
 
 def _has_concrete_identifier(text: str) -> bool:

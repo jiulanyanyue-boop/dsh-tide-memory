@@ -16,6 +16,7 @@ import argparse
 import json
 import getpass
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -60,6 +61,102 @@ KINDS = ("preference", "fact", "episode", "reflection")
 
 def db_path() -> Path:
     return Path(os.environ.get("MEMORY_DB", DEFAULT_DB))
+
+
+# --------------------------------------------------------------------------- #
+# 通用设置（面板「设置」页用）：$DSH_HOME/dsh-tide-memory.json
+#
+# 为什么放这：host.js 的 loadConfig 本来就读这个文件（config 查找链的最后一环），
+# 插件定时器每次跑都重新 resolveConfig，所以 Python 在这里改完，
+# 下一次定时器触发就用上了——不用重启、不用通知 host。
+# --------------------------------------------------------------------------- #
+
+#: 允许从面板改的键与类型。白名单之外一律拒绝——
+#: 配置文件里还有 db/inbox/python 这些路径项，绝不能从 HTTP 面板改。
+USER_SETTINGS: dict[str, type] = {
+    "autoConsolidate": bool,
+    "dailyConsolidate": bool,
+    "dailyConsolidateTime": str,
+}
+
+#: 每个键的人类说明，settings_get 原样带回，前端提示用
+USER_SETTINGS_HINTS: dict[str, str] = {
+    "autoConsolidate": "收件箱攒够后自动抽取并整理（无需手动命令或定时任务）",
+    "dailyConsolidate": "每天固定时刻整理一次，并顺带做生命周期维护（依赖消失 / TTL）",
+    "dailyConsolidateTime": "每日整理的时刻，24 小时制 HH:MM（例如 03:00）",
+}
+
+#: dailyConsolidateTime 的合法格式
+_DAILY_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+def user_settings_path() -> Path:
+    """设置文件路径。**必须与 host.js loadConfig 的第三候选完全一致**：
+    `$DSH_HOME/dsh-tide-memory.json`——否则 Python 写了 host 读不到，开关就是摆设。
+
+    例外：测试环境（显式设置 MEMORY_DB）时跟着库走，避免污染真实配置。
+    """
+    if os.environ.get("MEMORY_DB"):
+        return db_path().parent / "dsh-tide-memory.json"
+    dsh_home = os.environ.get("DSH_HOME") or str(Path.home() / ".dsh")
+    return Path(dsh_home) / "dsh-tide-memory.json"
+
+
+def read_user_settings() -> dict:
+    """读当前用户设置。文件不存在/坏掉就回空表——绝不抛异常。"""
+    try:
+        data = json.loads(user_settings_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_user_settings(patch: dict) -> tuple[dict, list[str]]:
+    """合并写入。只接受白名单内的键；非法值返回被拒绝的键列表。
+
+    host.js 的 resolveConfig 会把这份文件与 DEFAULTS 合并，
+    所以这里写什么，下一次巩固就按什么跑。
+    """
+    import re as _re
+
+    current = read_user_settings()
+    rejected: list[str] = []
+    for key, value in patch.items():
+        if key not in USER_SETTINGS:
+            rejected.append(key)
+            continue
+        expected = USER_SETTINGS[key]
+        if expected is bool:
+            current[key] = value if isinstance(value, bool) else bool(value)
+        elif expected is str:
+            text = str(value).strip()
+            if key == "dailyConsolidateTime" and not _DAILY_TIME_RE.match(text):
+                # 时间格式不对就拒绝这一个键，而不是整包失败——
+                # 用户可能同时改了开关和时间，开关不该被时间连坐
+                rejected.append(key)
+                continue
+            current[key] = text
+        else:
+            current[key] = value
+    try:
+        target = user_settings_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        raise RuntimeError(f"设置写入失败：{exc}") from exc
+    return current, rejected
+
+
+def describe_user_settings() -> dict:
+    """回给面板的形状：当前生效值（缺省用与 host.js DEFAULTS 相同的默认）。"""
+    current = read_user_settings()
+    return {
+        "autoConsolidate": bool(current.get("autoConsolidate", True)),
+        "dailyConsolidate": bool(current.get("dailyConsolidate", False)),
+        "dailyConsolidateTime": str(current.get("dailyConsolidateTime", "03:00")),
+    }
 
 
 def build_decider(use_llm: bool):
@@ -370,6 +467,14 @@ def flush_inbox(*, use_llm: bool = False, path: str | None = None) -> dict[str, 
             )
             cand.scope, cand.scope_ref = sc.scope, sc.scope_ref
         cand.cwd = cwd
+        # 顺手把这个工作区登记进索引：否则面板只有一串哈希，显示不出人话名字
+        if cwd:
+            try:
+                import workspace_index
+
+                workspace_index.register_workspace(conn, cwd=cwd)
+            except Exception:  # noqa: BLE001
+                pass
         return cand
 
     if use_llm and load_llm_config() is not None:
@@ -439,7 +544,90 @@ def _mask_key(key: str) -> str:
     return f"{key[:6]}…{key[-4:]}"
 
 
-def _candidates_from_text(text: str) -> list[Candidate]:
+#: list 只回这些字段：前端渲染够用，且**不含** source_session / fingerprint 等内部信息
+_LIST_FIELDS = (
+    "id", "kind", "subject", "predicate", "object", "content", "status",
+    "valid_from", "valid_to", "confidence", "last_seen_at",
+    "scope", "scope_ref", "summary", "depends_on", "expired_by",
+)
+
+#: 这些 op 只读（或有自己的隔离库），不该在真实库留下任何写入。
+#: 「测试生成」尤其重要：主人点它时必须保证零副作用。
+READ_ONLY_OPS = frozenset({
+    "list", "workspaces", "llm", "engine_status", "engine_test",
+})
+
+
+def _resolve_titles(conn, refs: set[str]) -> dict[str, str]:
+    """批量把 scope_ref 翻成人话，避免每行都查一次注册表。
+
+    三类 ref 各有各的翻法：
+      ws:<hash>   → workspaces 表 → 注册表 title → 路径 basename
+      path:<hash> → 反查真实路径 → basename（项目名）
+      git:<slug>  → 仓库名
+    """
+    titles: dict[str, str] = {}
+    for ref in refs:
+        if not ref:
+            continue
+        try:
+            import workspace_index
+
+            title = ""
+            if ref.startswith("ws:"):
+                row = conn.execute(
+                    "SELECT title, path FROM workspaces WHERE ref = ?", (ref,)
+                ).fetchone()
+                if row is not None:
+                    title = row["title"] or ""
+                    if not title and row["path"]:
+                        title = Path(row["path"]).name
+                if not title:
+                    title = workspace_index.title_for_ref(ref)
+            elif ref.startswith("path:"):
+                # 项目身份：把哈希还原成真实路径，取末段当项目名。
+                # 先查内存里的登记表（workspace_index 会扫描 DSH plugins 目录），
+                # 再退到旧 scope-roots.json 的历史路径。
+                try:
+                    from memory_semantics import _load_scope_roots, _resolve_hashed_path
+
+                    resolved = _resolve_hashed_path(ref)
+                    if not resolved:
+                        for root in _load_scope_roots():
+                            if "path:" + __import__("hashlib").sha1(
+                                root.encode("utf-8")
+                            ).hexdigest()[:12] == ref:
+                                resolved = root
+                                break
+                    if resolved:
+                        title = Path(resolved).name
+                except Exception:  # noqa: BLE001
+                    title = ""
+                if not title:
+                    # 还原不出来时，别把哈希甩给用户看
+                    title = "其它项目"
+            elif ref.startswith("git:"):
+                title = ref[len("git:"):].split("/")[-1]
+            titles[ref] = title or ref
+        except Exception:  # noqa: BLE001
+            titles[ref] = ref
+    return titles
+
+
+def _is_visible(scope: str, scope_ref: str, visibility: dict) -> bool:
+    """与 host.js / workspace_index 同口径的隔离判定（fail-closed）。"""
+    scope = scope or "global"
+    if scope == "global":
+        return True
+    if scope == "workspace":
+        current = visibility.get("ref") or ""
+        return bool(current) and scope_ref == current
+    if scope == "project":
+        return scope_ref in (visibility.get("project_refs") or [])
+    return False
+
+
+def _candidates_from_text(text: str, cwd: str = "") -> list[Candidate]:
     """把一段自然语言解析成候选：优先 LLM，没配置或解析失败时退回规则。"""
     from llm import LlmClient, load_llm_config
 
@@ -449,8 +637,9 @@ def _candidates_from_text(text: str) -> list[Candidate]:
             from extract_llm import extract
 
             report = extract(
-                [{"seq": None, "time": utc_now(), "text": text}],
+                [{"seq": None, "time": utc_now(), "text": text, "cwd": cwd}],
                 session_id="settings-ui",
+                cwd=cwd,
                 client=LlmClient(cfg),
             )
             if report.candidates:
@@ -487,22 +676,166 @@ def cmd_api(args: argparse.Namespace) -> int:
     op = payload.get("op")
     conn = connect(db_path())
     store = Store(conn)
-    store.start_run()
+    # 只读/测试类 op **不**在真实库开运行记录：否则点一次「测试生成」
+    # 或刷新一次面板都会往 runs 表塞一行，日积月累把库撑脏。
+    if op not in READ_ONLY_OPS:
+        store.start_run()
+
+    # ── 工作区上下文：所有读写都围着它转 ───────────────────────────────
+    # cwd 缺失就 fail-closed：只放行 global（用户画像），绝不把别的
+    # 工作区的记忆漏进当前视图。
+    req_cwd = str(payload.get("cwd") or "").strip()
+    req_ref = str(payload.get("workspace_ref") or "").strip()
+    try:
+        import workspace_index
+
+        # 登记工作区只发生在**会写记忆**的 op 上。
+        # 读类与测试类 op 绝不能顺手更新 last_seen_at —— 否则「点一次测试」
+        # 也会在真实库留下痕迹，破坏零副作用承诺。
+        if req_cwd and op not in READ_ONLY_OPS:
+            workspace_index.register_workspace(conn, cwd=req_cwd)
+        visibility = workspace_index.visible_refs(conn, cwd=req_cwd, ref=req_ref)
+        current = workspace_index.current_workspace(conn, cwd=req_cwd, ref=req_ref)
+    except Exception:  # noqa: BLE001  工作区索引挂了也不能让整个面板崩
+        visibility = {"ref": "", "title": "", "path": "", "workspace_id": "",
+                      "project_refs": [], "allow_global": True}
+        current = {"ref": "", "path": "", "title": "", "workspace_id": ""}
 
     def respond(data: dict, code: int = 0) -> int:
         print(json.dumps(data, ensure_ascii=False))
         return code
 
     if op == "list":
-        rows = conn.execute(
-            "SELECT id, kind, subject, predicate, object, content, status, "
-            "valid_from, valid_to, confidence, last_seen_at, "
-            "scope, scope_ref, summary, depends_on, expired_by "
-            "FROM memories ORDER BY "
-            "CASE status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END, "
-            "updated_at DESC"
-        ).fetchall()
-        return respond({"ok": True, "items": [dict(r) for r in rows]})
+        try:
+            rows = conn.execute(
+                f"SELECT {', '.join(_LIST_FIELDS)} FROM memories ORDER BY "
+                "CASE status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END, "
+                "updated_at DESC"
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            return respond({"ok": False, "error": f"读取失败：{exc}"})
+
+        # 隔离：只有当前工作区 + 用户画像（global）能出现在返回结果里。
+        # 已失效（valid_to 非空）的条目单独走 archived 分组，不混进正常列表。
+        visible_rows: list[dict] = []
+        archived_rows: list[dict] = []
+        hidden = 0
+        for row in rows:
+            item = dict(row)
+            if not _is_visible(item.get("scope") or "global", item.get("scope_ref") or "", visibility):
+                hidden += 1
+                continue
+            if item.get("valid_to") or item.get("expired_by"):
+                archived_rows.append(item)
+            else:
+                visible_rows.append(item)
+
+        refs = {item.get("scope_ref") or "" for item in visible_rows}
+        refs |= {item.get("scope_ref") or "" for item in archived_rows}
+        titles = _resolve_titles(conn, refs)
+        for item in visible_rows:
+            ref = item.get("scope_ref") or ""
+            item["workspace_title"] = titles.get(ref, "") if ref else ""
+        for item in archived_rows:
+            ref = item.get("scope_ref") or ""
+            item["workspace_title"] = titles.get(ref, "") if ref else ""
+
+        # 归属分组：当前工作区的记忆 = workspace 命中当前 ref，**或** project
+        # 命中当前 cwd 的项目身份。二者都算「本工作区的」，否则项目级记忆
+        # 会被错误地塞进「其它工作区」里，看起来像串了。
+        current_ref = visibility.get("ref") or ""
+        project_refs = set(visibility.get("project_refs") or [])
+
+        def belongs_here(item: dict) -> bool:
+            scope = item.get("scope") or "global"
+            ref = item.get("scope_ref") or ""
+            if scope == "workspace":
+                return bool(current_ref) and ref == current_ref
+            if scope == "project":
+                return ref in project_refs
+            return False
+
+        counts = {
+            "current": sum(1 for i in visible_rows if belongs_here(i)),
+            "global": sum(1 for i in visible_rows if (i.get("scope") or "global") == "global"),
+            "other_workspaces": sum(
+                1 for i in visible_rows
+                if (i.get("scope") or "global") != "global" and not belongs_here(i)
+            ),
+            "hidden_other_workspaces": hidden,
+        }
+
+        # 跨工作区可见性说明：被挡掉的条目**不给内容**，只给条数分组，
+        # 让用户知道「别处还有记忆」，但绝不会把内容漏过来。
+        # 只统计「仍然有效」的条目——已失效的、被拒的不算「别处还有东西」。
+        hidden_by_ref: dict[str, int] = {}
+        for row in rows:
+            item = dict(row)
+            if _is_visible(item.get("scope") or "global", item.get("scope_ref") or "", visibility):
+                continue
+            if item.get("valid_to") or item.get("expired_by"):
+                continue
+            if (item.get("status") or "") in ("rejected", "superseded", "expired"):
+                continue
+            scope = item.get("scope") or "global"
+            # global 的不会走到这里（global 永远可见），留个保险
+            if scope == "global":
+                continue
+            ref = item.get("scope_ref") or ""
+            hidden_by_ref[ref] = hidden_by_ref.get(ref, 0) + 1
+        hidden_titles = _resolve_titles(conn, set(hidden_by_ref))
+        hidden_groups = [
+            {"scope_ref": ref, "title": hidden_titles.get(ref, ref or "未归属"), "count": n}
+            for ref, n in sorted(hidden_by_ref.items(), key=lambda kv: -kv[1])
+        ]
+        counts["hidden_other_workspaces"] = sum(hidden_by_ref.values())
+        return respond({
+            "ok": True,
+            "current": {
+                "workspace_ref": current.get("ref") or "",
+                "path": current.get("path") or "",
+                "title": current.get("title") or "",
+                "workspace_id": current.get("workspace_id") or "",
+                "source": "workspace.json" if current.get("ref") else "none",
+            },
+            "items": visible_rows,
+            "counts": counts,
+            # 已失效/被取代的历史条目：仍可查（记忆永不物理删除），但单独一组
+            "archived": archived_rows,
+            # 只给「别处有多少条」，不给内容——这是隔离与可发现性的平衡点
+            "hidden_groups": hidden_groups,
+        })
+
+    if op == "workspaces":
+        # 只回元数据：ref / title / 条数。**绝不**回任何记忆内容，
+        # 否则「切换工作区查看」就变成了跨工作区读取。
+        try:
+            import workspace_index
+
+            items = workspace_index.list_workspaces(conn)
+        except Exception as exc:  # noqa: BLE001
+            return respond({"ok": False, "error": f"工作区索引不可用：{exc}"})
+        return respond({
+            "ok": True,
+            "current_ref": current.get("ref") or "",
+            "items": items,
+        })
+
+    if op == "register_workspace":
+        try:
+            import workspace_index
+
+            result = workspace_index.register_workspace(
+                conn,
+                cwd=req_cwd,
+                title=str(payload.get("title") or ""),
+                workspace_id=str(payload.get("workspace_id") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return respond({"ok": False, "error": f"登记失败：{exc}"})
+        if not result.get("ref"):
+            return respond({"ok": False, "error": "缺少可用的 cwd"})
+        return respond({"ok": True, **result})
 
     if op == "maintain":
         stats = maintain_lifecycle(conn)
@@ -512,7 +845,7 @@ def cmd_api(args: argparse.Namespace) -> int:
         text = str(payload.get("text", "")).strip()
         if len(text) < 4:
             return respond({"ok": False, "error": "内容太短，至少 4 个字"})
-        cands = _candidates_from_text(text)
+        cands = _candidates_from_text(text, cwd=req_cwd)
         if not cands:
             return respond({
                 "ok": False,
@@ -522,7 +855,9 @@ def cmd_api(args: argparse.Namespace) -> int:
         for cand in cands:
             cand.source_session = "settings-ui"
             cand.quote = cand.quote or text[:300]
-            outcome = consolidate(store, cand, RuleDecider())
+            cand.cwd = req_cwd
+            # 与 op=add 保持同一个判定器：否则「新增记忆」两个入口的结论会打架
+            outcome = consolidate(store, cand, build_decider(True))
             results.append({
                 "action": outcome.action,
                 "id": outcome.memory_id,
@@ -530,6 +865,7 @@ def cmd_api(args: argparse.Namespace) -> int:
                 "predicate": cand.predicate,
                 "object": cand.object,
                 "content": cand.content,
+                "reason": getattr(outcome, "reason", ""),
             })
         write_snapshot(conn, path=snapshot_path_for(db_path()))
         return respond({"ok": True, "results": results})
@@ -542,8 +878,11 @@ def cmd_api(args: argparse.Namespace) -> int:
             return respond({"ok": False, "error": "记忆不存在"})
         if len(text) < 2:
             return respond({"ok": False, "error": "内容太短"})
+        # 跨工作区编辑：当前工作区看不到的条目一律拒绝（fail-closed）
+        if not _is_visible(row.scope or "global", row.scope_ref or "", visibility):
+            return respond({"ok": False, "error": "这条记忆不属于当前工作区，已拒绝编辑"})
 
-        cands = _candidates_from_text(text)
+        cands = _candidates_from_text(text, cwd=req_cwd)
         fields: dict[str, object] = {"content": text}
         if cands:
             cand = cands[0]
@@ -601,9 +940,18 @@ def cmd_api(args: argparse.Namespace) -> int:
             source_session="settings-ui",
             recorded_at=utc_now(),
         )
+        # 归属：手动添加也要跟当前工作区绑定，否则会一律落成 global
+        cand.cwd = req_cwd
+        if req_ref and not cand.scope:
+            cand.scope, cand.scope_ref = "workspace", req_ref
         outcome = consolidate(store, cand, build_decider(True))
         write_snapshot(conn, path=snapshot_path_for(db_path()))
-        return respond({"ok": True, "action": outcome.action, "id": outcome.memory_id})
+        return respond({
+            "ok": True,
+            "action": outcome.action,
+            "id": outcome.memory_id,
+            "reason": getattr(outcome, "reason", ""),
+        })
 
     if op == "update":
         memory_id = str(payload.get("id", "")).strip()
@@ -638,6 +986,9 @@ def cmd_api(args: argparse.Namespace) -> int:
         row = store.get(memory_id) if memory_id else None
         if row is None:
             return respond({"ok": False, "error": "记忆不存在"})
+        # 跨工作区删除同样 fail-closed
+        if not _is_visible(row.scope or "global", row.scope_ref or "", visibility):
+            return respond({"ok": False, "error": "这条记忆不属于当前工作区，已拒绝删除"})
         conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         conn.commit()
         store.log(
@@ -652,14 +1003,78 @@ def cmd_api(args: argparse.Namespace) -> int:
         from llm import CONFIG_PATH, load_llm_config
 
         cfg = load_llm_config()
+        # 只回掩码：明文密钥永远不出这个进程
         return respond({
             "ok": True,
             "configured": cfg is not None,
             "base_url": cfg.base_url if cfg else "",
             "model": cfg.model if cfg else "",
-            "api_key_masked": _mask_key(cfg.api_key) if cfg else "",
             "config_path": str(CONFIG_PATH),
+            **_key_state(),
         })
+
+    if op == "settings_get":
+        return respond({
+            "ok": True,
+            "settings": describe_user_settings(),
+            "hints": USER_SETTINGS_HINTS,
+            "path": str(user_settings_path()),
+        })
+
+    if op == "settings_set":
+        patch = payload.get("settings")
+        if not isinstance(patch, dict) or not patch:
+            return respond({"ok": False, "error": "缺少 settings 补丁"})
+        try:
+            saved, rejected = write_user_settings(patch)
+        except RuntimeError as exc:
+            return respond({"ok": False, "error": str(exc)})
+        return respond({
+            "ok": True,
+            "settings": describe_user_settings(),
+            # 告诉前端哪些键被拒绝（白名单外 / 格式非法），便于排查而不是静默吞掉
+            "rejected": rejected,
+            "path": str(user_settings_path()),
+            "note": "host.js 的下一次巩固会读取新设置，立即生效，无需重启",
+        })
+
+    if op == "llm-clear":
+        key_state = _clear_key()
+        return respond({"ok": True, "config_path": str(_llm_config_path()), **key_state})
+
+    if op == "engine_status":
+        try:
+            return respond(_engine_status())
+        except Exception as exc:  # noqa: BLE001
+            return respond({
+                "ok": False,
+                "error": f"引擎状态读取失败：{exc}",
+                "engine": ENGINE_RULE,
+                "engine_label": ENGINE_LABEL[ENGINE_RULE],
+                "reason": "状态未知，按规则引擎处理",
+                "checks": [],
+            })
+
+    if op == "engine_test":
+        text = str(payload.get("text") or "").strip() or PROBE_TEXT
+        # 长度上限：测试文本是给人看的探针，不是灌库入口
+        if len(text) > 300:
+            text = text[:300]
+        try:
+            return respond(_engine_test(text, req_cwd))
+        except Exception as exc:  # noqa: BLE001
+            return respond({
+                "ok": False,
+                "engine": ENGINE_RULE,
+                "engine_label": ENGINE_LABEL[ENGINE_RULE],
+                "degraded": True,
+                "degrade_reason": f"{type(exc).__name__}: {exc}",
+                "text": text,
+                "candidates": [],
+                "candidate_count": 0,
+                "actions": {},
+                "note": "测试未执行成功；未写入任何真实记忆",
+            })
 
     if op == "llm-set":
         from llm import LlmConfig, load_llm_config, save_llm_config
@@ -671,12 +1086,301 @@ def cmd_api(args: argparse.Namespace) -> int:
             current.base_url = str(payload["base_url"]).rstrip("/")
         if payload.get("model"):
             current.model = str(payload["model"])
-        if payload.get("api_key"):
-            current.api_key = str(payload["api_key"])
+        # 空串 = 不改密钥（前端「保存配置」不会误清密钥）
+        submitted = str(payload.get("api_key") or "").strip()
+        if submitted:
+            current.api_key = submitted
         path = save_llm_config(current)
-        return respond({"ok": True, "path": str(path)})
+        # config_path 是 llm.json；密文路径在 secret_path / key.path。
+        # 早期版本把两者都叫 path，前端分不清，这里明确区分。
+        # configured 由**实际状态**判定，不顺口承诺「保存成功=已配置」：
+        # 只改 base_url/model 而没密钥时，引擎其实仍是规则模式。
+        st = _engine_status()
+        return respond({
+            "ok": True,
+            "path": str(path),
+            "config_path": str(path),
+            "base_url": current.base_url,
+            "model": current.model,
+            "configured": st["llm"]["configured"],
+            "engine": st["engine"],
+            "engine_label": st["engine_label"],
+            "engine_reason": st["reason"],
+            **_key_state(),
+        })
 
     return respond({"ok": False, "error": f"未知 op: {op}"})
+
+
+# --------------------------------------------------------------------------- #
+# 密钥状态（永不含明文）
+# --------------------------------------------------------------------------- #
+
+def _key_state() -> dict:
+    """给面板看的密钥状态。**只含掩码与方案，绝不含明文。**
+
+    ⚠️ v2：同时回**扁平**与**嵌套**两种形态。
+    原因：前端按契约读嵌套 `key.scheme`，而早期实现只回扁平字段，
+    前端读不到就把 scheme 退化成空串 → 徽标显示「未存储」，
+    即使密钥其实已正确落盘。两种形态并存后，任一侧读法都能拿到真值。
+    """
+    try:
+        import secret_store
+
+        state = secret_store.describe()
+        stored = bool(state.get("stored"))
+        scheme = state.get("scheme") or "none"
+        available = state.get("available_scheme") or "none"
+        secret_path = state.get("path") or ""
+        writable = bool(state.get("writable"))
+        masked = state.get("api_key_masked") or ""
+        decryptable = _can_decrypt(stored, scheme)
+        inner = {
+            "stored": stored,
+            "scheme": scheme,
+            "available_scheme": available,
+            "path": secret_path,
+            "writable": writable,
+            "decryptable": decryptable,
+        }
+        return {
+            "api_key_masked": masked,
+            # 扁平形态（向后兼容旧前端读法）
+            "stored": stored,
+            "scheme": scheme,
+            "available_scheme": available,
+            "secret_path": secret_path,
+            "writable": writable,
+            "decryptable": decryptable,
+            # 嵌套形态（契约 §3 v2，当前前端读法）
+            "key": inner,
+        }
+    except Exception:  # noqa: BLE001
+        empty = {
+            "stored": False, "scheme": "none", "available_scheme": "none",
+            "path": "", "writable": False, "decryptable": False,
+        }
+        return {
+            "api_key_masked": "", "stored": False, "scheme": "none",
+            "available_scheme": "none", "secret_path": "", "writable": False,
+            "decryptable": False, "key": dict(empty),
+        }
+
+
+def _can_decrypt(stored: bool, scheme: str) -> bool:
+    """密文能不能被当前用户解开。
+
+    换机器/换用户后 DPAPI 会解不开，这时**不能**报「已加密可用」——
+    面板要如实显示，否则主人会以为配好了、实际每次调用都失败。
+    """
+    if not stored or scheme == "none":
+        return False
+    try:
+        import secret_store
+
+        key, _scheme = secret_store.load_secret()
+        return bool(key)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _clear_key() -> dict:
+    try:
+        import secret_store
+
+        secret_store.clear_secret()
+    except Exception:  # noqa: BLE001
+        pass
+    return _key_state()
+
+
+def _llm_config_path() -> Path:
+    """llm.json 的位置（与 secret 文件区分开，别再让 path 打架）。"""
+    from llm import CONFIG_PATH
+
+    return Path(CONFIG_PATH)
+
+
+# --------------------------------------------------------------------------- #
+# 引擎状态：现在到底走 LLM 还是规则？
+#
+# 判定必须 fail-closed：只有「配置齐全 + 密钥真能解开」才敢报 LLM。
+# 否则主人以为在跑模型，实际每次都在走正则兜底——那才是最难查的坑。
+# --------------------------------------------------------------------------- #
+
+ENGINE_LLM = "llm"
+ENGINE_RULE = "rule"
+
+ENGINE_LABEL = {
+    ENGINE_LLM: "LLM 生成模式",
+    ENGINE_RULE: "规则引擎模式",
+}
+
+
+def _engine_status() -> dict:
+    """返回当前**实际会生效**的引擎。只读，不触网、不调模型。"""
+    from llm import load_llm_config
+
+    cfg = load_llm_config()
+    key = _key_state()
+    checks: list[dict] = []
+
+    configured = cfg is not None
+    checks.append({
+        "name": "LLM 配置",
+        "ok": configured,
+        "detail": (f"{cfg.base_url} · {cfg.model}" if configured
+                   else "还没填 base_url / model"),
+    })
+
+    stored = bool(key.get("stored"))
+    decryptable = bool(key.get("decryptable"))
+    checks.append({
+        "name": "API Key",
+        "ok": stored and decryptable,
+        "detail": ("密文可解密" if (stored and decryptable)
+                   else ("密文存在但解不开（可能换了机器/用户）" if stored
+                         else "还没保存密钥")),
+    })
+    checks.append({
+        "name": "加密方案",
+        "ok": bool(key.get("scheme")) and key.get("scheme") != "none",
+        "detail": str(key.get("scheme") or "none"),
+    })
+
+    if not configured:
+        engine, reason = ENGINE_RULE, "未配置 LLM（缺 base_url 或 model），走规则引擎"
+    elif not stored:
+        engine, reason = ENGINE_RULE, "已配置 LLM 但没保存 API Key，走规则引擎"
+    elif not decryptable:
+        engine, reason = ENGINE_RULE, "API Key 密文无法解密，走规则引擎（请重新保存密钥）"
+    else:
+        engine, reason = ENGINE_LLM, f"已配置 {cfg.model}，密钥可解密"
+
+    return {
+        "ok": True,
+        "engine": engine,
+        "engine_label": ENGINE_LABEL[engine],
+        "reason": reason,
+        "llm": {
+            "configured": configured,
+            "base_url": cfg.base_url if cfg else "",
+            "model": cfg.model if cfg else "",
+            "key": {
+                "stored": stored,
+                "scheme": key.get("scheme") or "none",
+                "decryptable": decryptable,
+            },
+        },
+        "checks": checks,
+    }
+
+
+#: 测试生成用的探针句：必须是**明确可抽取的结论句**，
+#: 否则「抽出 0 条」时无法区分「引擎正常但内容不值得记」和「引擎挂了」。
+PROBE_TEXT = "这个项目用 SQLite 存长期记忆，零第三方依赖，不引入任何外部库"
+
+
+def _engine_test(text: str, cwd: str) -> dict:
+    """跑一次**完整**的记忆生成流程，但什么都不留下。
+
+    做法：在临时目录里新建一个库，走与真实流程完全相同的
+    extract → consolidate 路径，跑完把临时目录整个删掉。
+    真实库一个字节都不动，所以主人点多少次都没有副作用。
+
+    `fallback=False` 是关键：extract 默认会在 LLM 失败时静默降级到规则，
+    那样引擎判定就成了谎报。这里必须让失败**显式冒出来**。
+    """
+    import shutil
+    import tempfile
+    import time as _time
+
+    from llm import LlmClient, load_llm_config
+
+    status = _engine_status()
+    cfg = load_llm_config()
+    started = _time.time()
+
+    result = {
+        "ok": True,
+        "engine": status["engine"],
+        "engine_label": status["engine_label"],
+        "reason": status["reason"],
+        "degraded": False,
+        "degrade_reason": None,
+        "text": text,
+        "candidates": [],
+        "candidate_count": 0,
+        "actions": {},
+        "llm": status["llm"],
+        "note": "本测试在临时数据库中执行完整抽取+巩固流程，未写入任何真实记忆",
+    }
+
+    tmp_root = tempfile.mkdtemp(prefix="tide-engine-test-")
+    try:
+        probe_db = Path(tmp_root) / "memory.db"
+        probe_conn = connect(probe_db)
+        probe_store = Store(probe_conn)
+        probe_store.start_run()
+
+        candidates: list[Candidate] = []
+        if status["engine"] == ENGINE_LLM and cfg is not None:
+            try:
+                from extract_llm import extract
+
+                report = extract(
+                    [{"seq": None, "time": utc_now(), "text": text, "cwd": cwd}],
+                    session_id="engine-test",
+                    cwd=cwd,
+                    client=LlmClient(cfg),
+                    fallback=False,
+                )
+                candidates = list(report.candidates)
+            except Exception as exc:  # noqa: BLE001
+                # LLM 真的失败了：如实上报降级，而不是假装成功
+                result["engine"] = ENGINE_RULE
+                result["engine_label"] = ENGINE_LABEL[ENGINE_RULE]
+                result["degraded"] = True
+                result["degrade_reason"] = f"{type(exc).__name__}: {exc}"
+
+        if status["engine"] != ENGINE_LLM or result["degraded"]:
+            # 规则引擎路径（也是真实运行时会走的同一条路）
+            for kind, predicate, obj in extract_from_text(text):
+                candidates.append(Candidate(
+                    kind=kind, subject="user", predicate=predicate, object=obj,
+                    content=f"用户提到：{obj}", confidence=0.6,
+                    quote=text[:300], source_session="engine-test",
+                    recorded_at=utc_now(), cwd=cwd,
+                ))
+
+        for cand in candidates:
+            cand.cwd = cand.cwd or cwd
+            outcome = consolidate(probe_store, cand, build_decider(status["engine"] == ENGINE_LLM))
+            action = getattr(outcome, "action", "skip")
+            result["actions"][action] = result["actions"].get(action, 0) + 1
+
+        result["candidates"] = [
+            {
+                "kind": c.kind,
+                "predicate": c.predicate,
+                "object": c.object,
+                "content": c.content[:200],
+                "confidence": float(c.confidence or 0),
+            }
+            for c in candidates
+        ]
+        result["candidate_count"] = len(result["candidates"])
+        probe_conn.close()
+    except Exception as exc:  # noqa: BLE001
+        result["ok"] = False
+        result["degraded"] = True
+        result["degrade_reason"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        # 临时库连同里面可能写入的东西一起删掉——这是「零副作用」的保证
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+    result["elapsed_ms"] = int((_time.time() - started) * 1000)
+    return result
 
 
 def cmd_llm(args: argparse.Namespace) -> int:

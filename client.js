@@ -179,7 +179,99 @@ window.__ModuleLoader__.load({
       '.dm-update-foot{margin-top:10px;font-size:11px;color:var(--dsw-alias-label-secondary,#8b8b8b)}',
       '.dm-star-glyph{color:#f59e0b;font-size:13px;line-height:1}',
       '.dm-plugin-icon{border-radius:9px;flex:none;object-fit:cover;display:block;box-shadow:0 1px 3px rgba(0,0,0,.12)}',
-      '@media (prefers-reduced-motion:reduce){.dm-btn,.dm-overlay,.dm-modal{transition:none;animation:none}}',
+      // ── 工作区分组视图
+      '.dm-groups{display:flex;flex-direction:column;gap:12px}',
+      '.dm-group{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.18));border-radius:12px;padding:10px 12px;background:var(--dsw-alias-button-floating-hover,rgba(128,128,128,.04))}',
+      '.dm-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0 0 2px}',
+      '.dm-group-title{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;min-width:0;word-break:break-word}',
+      '.dm-group-count{font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a);white-space:nowrap}',
+      '.dm-group-body{margin-top:2px}',
+      '.dm-group-empty{padding:9px 2px;font-size:12px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.dm-group-toggle{display:flex;align-items:center;gap:6px;width:100%;padding:0;margin:0;border:none;background:transparent;color:inherit;font:inherit;font-weight:600;font-size:12.5px;cursor:pointer;text-align:left}',
+      '.dm-group-toggle:hover .dm-group-caret{opacity:1}',
+      '.dm-group-caret{display:inline-block;width:12px;text-align:center;opacity:.6;transition:transform .12s}',
+      '.dm-group-caret.open{transform:rotate(90deg)}',
+      '.dm-subgroup{margin:6px 0 0;padding:6px 0 2px;border-top:1px dashed var(--dsw-alias-border-l2,rgba(128,128,128,.2))}',
+      '.dm-subgroup:first-child{border-top:none;padding-top:0;margin-top:2px}',
+      '.dm-subgroup-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-secondary,#8b8b8b);margin-bottom:2px}',
+      '.dm-subgroup-title{min-width:0;word-break:break-word}',
+      '.dm-hintbar{padding:8px 11px;margin:0 0 10px;border-radius:9px;border-left:3px solid var(--dsw-alias-brand-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 10%,transparent);font-size:12px;line-height:1.55;color:var(--dsw-alias-label-secondary,#6b7280)}',
+      // ── API Key 安全配置卡片
+      '.dm-key{display:flex;flex-direction:column;gap:8px}',
+      '.dm-key-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}',
+      '.dm-key-label{font-size:12px;color:var(--dsw-alias-label-secondary,#8b8b8b)}',
+      '.dm-key-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}',
+      '.dm-key-input{flex:1 1 220px;min-width:0;box-sizing:border-box;height:32px;padding:0 10px;border-radius:9px;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3));background:transparent;color:inherit;font:inherit;outline:none;transition:border-color .15s,box-shadow .15s}',
+      '.dm-key-input:focus{border-color:var(--dsw-alias-brand-primary,#4d6bfe);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 16%,transparent)}',
+      '.dm-key-input:disabled{opacity:.5;cursor:not-allowed}',
+      '.dm-badge.key-ok{color:#16a34a;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.25)}',
+      '.dm-badge.key-off{color:var(--dsw-alias-label-secondary,#8b8b8b);background:rgba(128,128,128,.12);border-color:rgba(128,128,128,.22)}',
+      // ── 更新卡片：成功源 + 诊断
+      '.dm-update-source{margin:0 0 8px;font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.dm-update-diag{margin:0 0 10px;font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.dm-update-diag summary{cursor:pointer;opacity:.85;list-style:none}',
+      '.dm-update-diag summary::-webkit-details-marker{display:none}',
+      '.dm-update-diag summary:hover{opacity:1;text-decoration:underline}',
+      '.dm-update-diag ul{margin:5px 0 0;padding-left:16px;line-height:1.65}',
+      '.dm-update-diag-src{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}',
+      '.dm-update-diag-err{color:#dc2626}',
+      // ── 引擎状态标识区 + 测试生成（任务 6 / 契约 §3b）
+      '.dm-engine{display:flex;flex-direction:column;gap:8px;margin-top:11px;padding-top:11px;border-top:1px dashed var(--dsw-alias-border-l2,rgba(128,128,128,.22))}',
+      '.dm-engine-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+      '.dm-engine-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:2px 10px;border-radius:999px;border:1px solid transparent;white-space:nowrap}',
+      '.dm-engine-badge.on{color:#16a34a;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.28)}',
+      '.dm-engine-badge.rule{color:#d97706;background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.3)}',
+      '.dm-engine-badge.unknown{color:var(--dsw-alias-label-secondary,#8b8b8b);background:rgba(128,128,128,.12);border-color:rgba(128,128,128,.24)}',
+      '.dm-engine-reason{margin:0;font-size:12px;line-height:1.55;color:var(--dsw-alias-label-secondary,#8b8b8b)}',
+      '.dm-engine-checks{margin:0;font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.dm-engine-checks summary{cursor:pointer;list-style:none;opacity:.85}',
+      '.dm-engine-checks summary::-webkit-details-marker{display:none}',
+      '.dm-engine-checks summary:hover{opacity:1;text-decoration:underline}',
+      '.dm-engine-checks ul{margin:6px 0 0;padding-left:16px;line-height:1.7}',
+      '.dm-engine-check-ok{color:#16a34a}',
+      '.dm-engine-check-off{color:#d97706}',
+      '.dm-engine-val{font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.dm-test{font-size:12.5px}',
+      '.dm-test-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}',
+      '.dm-test-out{padding:9px 11px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.18));background:var(--dsw-alias-button-floating-hover,rgba(128,128,128,.06))}',
+      '.dm-test-degrade{margin:6px 0 0;font-size:12px;line-height:1.55;color:#d97706}',
+      '.dm-test-cand{display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px dashed var(--dsw-alias-border-l2,rgba(128,128,128,.2))}',
+      '.dm-test-cand:last-child{border-bottom:none}',
+      '.dm-test-cand-key{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;color:var(--dsw-alias-label-secondary,#8b8b8b);word-break:break-word}',
+      '.dm-test-cand-content{font-size:12px;line-height:1.55;word-break:break-word}',
+      '.dm-test-note{margin:8px 0 0;font-size:11px;line-height:1.55;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.dm-test-more{font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a);padding-top:4px}',
+      '.dm-test-empty{font-size:12px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      /* ══ 页签条 + 开关（学 our-free-model 的 ofm_tabs / ofm_switch）════
+       *
+       * 为什么要页签：面板内容长成了一条竖直瀑布（升级卡片 → 引擎卡片 →
+       * 记忆列表），用户要滚到最后才能看到记忆。ofm 用「页签条 + 每页一个
+       * 组件」解决同类问题，这里照搬交互、样式用自己的 dm- 体系。
+       *
+       * 为什么要开关：autoConsolidate 这类「可选增强」原来只能改配置文件，
+       * 用户根本不知道有这功能。做成 Switch，一点就切换并持久化。
+       */
+      '.dm-tabs{position:relative;display:flex;flex-wrap:wrap;gap:2px;padding:3px;border-radius:13px;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.26));background:var(--dsw-alias-bg-elevated,var(--dsw-alias-button-elevated-fill,transparent));box-shadow:inset 0 1px 2px rgba(0,0,0,.04);margin:0 0 14px}',
+      '.dm-tab{position:relative;z-index:1;font:inherit;font-size:12.5px;font-weight:600;padding:6px 14px;border-radius:10px;border:0;background:transparent;color:var(--dsw-alias-label-secondary,#8b8b8b);cursor:pointer;white-space:nowrap;transition:color .2s ease,background .2s ease}',
+      '.dm-tab[aria-selected="true"]{color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-button-floating-hover,rgba(128,128,128,.14))}',
+      '.dm-tab:hover{color:var(--dsw-alias-label-primary,inherit)}',
+      '.dm-tab .dm-tabnum{font-variant-numeric:tabular-nums;font-weight:600;color:var(--dsw-alias-label-tertiary,#9a9a9a);margin-left:6px;font-size:11px}',
+      /* Switch：role=switch 的按钮 + aria-checked，样式完全走主题变量 */
+      '.dm-switch{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;appearance:none;background:transparent;border:0;padding:0;font:inherit;color:var(--dsw-alias-label-secondary,#8b8b8b);font-size:12.5px}',
+      '.dm-switch i{position:relative;width:36px;height:20px;border-radius:999px;background:var(--dsw-alias-bg-layer-1,rgba(128,128,128,.18));border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3));box-shadow:inset 0 1px 2px rgba(0,0,0,.06);transition:background .2s ease,border-color .2s ease;flex:none}',
+      '.dm-switch i::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--dsw-alias-label-secondary,#8b8b8b);box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform .2s ease,background .2s ease}',
+      '.dm-switch:hover i{border-color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.dm-switch[aria-checked="true"] i{background:var(--dsw-alias-state-business-primary,#4d6bfe);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 85%,transparent)}',
+      '.dm-switch[aria-checked="true"] i::after{transform:translateX(16px);background:#fff}',
+      '.dm-switch:disabled{opacity:.5;cursor:not-allowed}',
+      /* 设置卡：开关行 + 说明 */
+      '.dm-settings{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.26));border-radius:14px;padding:14px 16px;margin-bottom:14px;background:var(--dsw-alias-button-elevated-fill,transparent);box-shadow:0 1px 2px rgba(0,0,0,.03)}',
+      '.dm-settings-title{font-weight:600;font-size:13.5px;margin:0 0 10px;display:flex;align-items:center;gap:8px}',
+      '.dm-setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.12));flex-wrap:wrap}',
+      '.dm-setting-row:last-child{border-bottom:none}',
+      '.dm-setting-name{font-size:13px;color:var(--dsw-alias-label-primary,inherit)}',
+      '.dm-setting-hint{font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a);margin-top:2px;line-height:1.55;max-width:640px}',
+      '@media (prefers-reduced-motion:reduce){.dm-btn,.dm-overlay,.dm-modal,.dm-group-caret{transition:none;animation:none}}',
     ].join('\n')
 
     /**
@@ -438,7 +530,7 @@ window.__ModuleLoader__.load({
         return EnvGate
       }
 
-    function makePanel(React, ReactDOM) {
+    function makePanel(React, ReactDOM, services) {
       var h = React.createElement
 
       // 迁移 002：给人看的标签。绝不把谓词/类型码直接亮给主人。
@@ -461,11 +553,143 @@ window.__ModuleLoader__.load({
         return EXPIRED_CN[reason] || reason || ''
       }
 
+      /* ── 当前工作区识别（全链路容错）──────────────────────────────────────
+       *
+       * 设置页可能在任何时机被挂载，uiWorkspace / sessions / workspaces 任一服务
+       * 都可能拿不到（未注册、还没 ready、被裁剪）。这里所有探测都吞异常，
+       * 拿不到就退回空字符串 → 调用方传 cwd: undefined → 后端只返回 global。
+       * 绝不让设置页因为「认不出工作区」而白屏。
+       */
+      function safeService(services, name) {
+        if (!name) return null
+        /* ① 先从 apply 阶段缓存的可选服务里取 */
+        try {
+          if (services && typeof services.resolve === 'function') {
+            var cached = services.resolve(name)
+            if (cached !== undefined && cached !== null) return cached
+          }
+        } catch (error) {
+          /* 继续往下试 */
+        }
+        /* ② 再试 owner 直取（兼容 owner.get / owner[name] 两种形状） */
+        try {
+          var owner = services && services.owner ? services.owner : null
+          if (owner) {
+            if (typeof owner.get === 'function') {
+              var got = owner.get(name)
+              if (got !== undefined && got !== null) return got
+            }
+            var direct = owner[name]
+            if (direct !== undefined && direct !== null) return direct
+          }
+        } catch (error) {
+          /* 服务未注册/取用失败：静默降级 */
+        }
+        return null
+      }
+
+      function snapshotOf(controller) {
+        if (!controller) return null
+        var target = controller.list && controller.list.getSnapshot ? controller.list : controller
+        try {
+          if (typeof target.getSnapshot === 'function') return target.getSnapshot()
+        } catch (error) {
+          return null
+        }
+        return null
+      }
+
+      /**
+       * 取当前会话 cwd：uiWorkspace.selection → sessions.list.byId[id].cwd；
+       * 选不到就退到「最近一个带 cwd 的会话」；仍然没有就返回 ''。
+       */
+      function resolveCwd(sessions, uiWorkspace) {
+        var snapshot = snapshotOf(sessions)
+        var byId = snapshot && snapshot.byId ? snapshot.byId : null
+        if (!byId) return ''
+        var sessionId = ''
+        try {
+          var selection = uiWorkspace ? uiWorkspace.selection : null
+          var selSnap = selection && typeof selection.getSnapshot === 'function' ? selection.getSnapshot() : null
+          if (selSnap && typeof selSnap.sessionId === 'string') sessionId = selSnap.sessionId
+        } catch (error) {
+          sessionId = ''
+        }
+        if (sessionId) {
+          var picked = byId[sessionId]
+          if (picked && typeof picked.cwd === 'string' && picked.cwd) return picked.cwd
+        }
+        var ids = []
+        if (snapshot.ids && snapshot.ids.length) ids = snapshot.ids
+        else {
+          /* 没有 ids 数组时用对象键兜底（顺序不保证最新，但聊胜于无） */
+          var key
+          for (key in byId) {
+            if (Object.prototype.hasOwnProperty.call(byId, key)) ids.push(key)
+          }
+        }
+        var i
+        for (i = 0; i < ids.length; i += 1) {
+          var row = byId[ids[i]]
+          if (row && typeof row.cwd === 'string' && row.cwd) return row.cwd
+        }
+        return ''
+      }
+
+      /**
+       * 订阅 sessions.list / workspaces.list；变化时回调一次。
+       * 返回一个总是可安全调用的取消函数。
+       */
+      function watchWorkspaceSignals(sessions, uiWorkspaces, onChange) {
+        var offs = []
+        var add = function (controller) {
+          if (!controller) return
+          var target = controller.list && typeof controller.list.subscribe === 'function' ? controller.list : controller
+          if (typeof target.subscribe !== 'function') return
+          try {
+            var off = target.subscribe(function () {
+              try {
+                onChange()
+              } catch (error) {
+                /* 回调异常不传染给订阅方 */
+              }
+            })
+            if (typeof off === 'function') offs.push(off)
+          } catch (error) {
+            /* 订阅失败：退回只读，不重试 */
+          }
+        }
+        add(sessions)
+        add(uiWorkspaces)
+        return function () {
+          var i
+          for (i = 0; i < offs.length; i += 1) {
+            var off = offs[i]
+            try {
+              if (typeof off === 'function') off()
+            } catch (error) {
+              /* 取消订阅失败忽略 */
+            }
+          }
+          offs = []
+        }
+      }
+
 
       function Panel() {
         var itemsState = React.useState([])
         var items = itemsState[0]
         var setItems = itemsState[1]
+
+        /* 后端 list 响应里的 current（工作区没识别到就是 null） */
+        var currentState = React.useState(null)
+        var current = currentState[0]
+        var setCurrent = currentState[1]
+
+        /* 当前会话 cwd（'' 表示没识别到） */
+        var cwdState = React.useState('')
+        var cwd = cwdState[0]
+        var setCwd = cwdState[1]
 
         var msgState = React.useState('')
         var msg = msgState[0]
@@ -479,9 +703,76 @@ window.__ModuleLoader__.load({
         var llm = llmState[0]
         var setLlm = llmState[1]
 
+        /* 引擎状态（op:'engine_status'，契约 §3b）：null = 还没拿到（老后端 / 失败） */
+        var engineState = React.useState(null)
+        var engine = engineState[0]
+        var setEngine = engineState[1]
+
+        /* 测试生成（op:'engine_test'）：结果只读展示，绝不触发记忆列表刷新 */
+        var testBusyState = React.useState(false)
+        var testBusy = testBusyState[0]
+        var setTestBusy = testBusyState[1]
+        var testResultState = React.useState(null)
+        var testResult = testResultState[0]
+        var setTestResult = testResultState[1]
+        var testErrorState = React.useState('')
+        var testError = testErrorState[0]
+        var setTestError = testErrorState[1]
+
+        /* API Key 输入框的值只活在本地 state，永远不回填服务端值 */
+        var keyInputState = React.useState('')
+        var keyInput = keyInputState[0]
+        var setKeyInput = keyInputState[1]
+
+        var baseUrlInputState = React.useState('')
+        var baseUrlInput = baseUrlInputState[0]
+        var setBaseUrlInput = baseUrlInputState[1]
+
+        var modelInputState = React.useState('')
+        var modelInput = modelInputState[0]
+        var setModelInput = modelInputState[1]
+
+        var keyBusyState = React.useState(false)
+        var keyBusy = keyBusyState[0]
+        var setKeyBusy = keyBusyState[1]
+
         var modalState = React.useState(null)
         var modal = modalState[0]
         var setModal = modalState[1]
+
+        /* 「其它工作区」折叠组：默认展开，默认值 true */
+        var otherOpenState = React.useState(true)
+        var otherOpen = otherOpenState[0]
+        var setOtherOpen = otherOpenState[1]
+        /* 子分组折叠表：{ [scope_ref]: true } 表示收起 */
+        var foldedState = React.useState({})
+        var folded = foldedState[0]
+        var setFolded = foldedState[1]
+
+        /* ── 页签（学 our-free-model 的 ofm_tabs）────────────────────────
+         * memory   = 记忆列表（默认页：这是用户最常看的）
+         * engine   = 巩固引擎（LLM 配置 + 引擎状态 + 测试生成）
+         * settings = 通用设置（自动整理开关等）
+         * upgrade  = 插件升级
+         */
+        var tabState = React.useState('memory')
+        var tab = tabState[0]
+        var setTab = tabState[1]
+
+        /* ── 通用设置（op:'settings_get' / 'settings_set'）───────────────
+         * null = 还没拿到（老后端没有这个 op）；拿到后是个 { key: value } 平面表 */
+        var settingsState = React.useState(null)
+        var settings = settingsState[0]
+        var setSettings = settingsState[1]
+        var settingsBusyState = React.useState(false)
+        var settingsBusy = settingsBusyState[0]
+        var setSettingsBusy = settingsBusyState[1]
+
+        /* 每日整理时刻输入框：只在本地暂存，点「保存时刻」才提交 */
+        var dailyTimeInputState = React.useState('')
+        var dailyTimeInput = dailyTimeInputState[0]
+        var setDailyTimeInput = dailyTimeInputState[1]
+        var dailyTimeDirty = React.useRef(false)
 
         // ── 自动更新（本插件自带能力，与其它插件零耦合）
         var updateInfoState = React.useState(null)
@@ -495,12 +786,44 @@ window.__ModuleLoader__.load({
           return apiCall(payload, false)
         }
 
-        var refresh = function () {
+        /* 当前 cwd 在闭包里随时会变，用 ref 避免 refresh 被旧值钉住 */
+        var cwdRef = React.useRef('')
+        cwdRef.current = cwd
+
+        var refreshWith = function (useCwd) {
           setBusy(true)
-          Promise.all([call({ op: 'list' }), call({ op: 'llm' })])
+          var listPayload = { op: 'list' }
+          if (useCwd) listPayload.cwd = useCwd
+          /* workspaces 是新增 op，后端还没上线时可能 404/ok:false；
+           * 单独兜住，绝不让它把 list 一起拖垮。 */
+          var workspacesProbe = call({ op: 'workspaces' }).catch(function () {
+            return null
+          })
+          /* engine_status 同样是新增 op：老后端会 404 / ok:false / 非 JSON，
+           * 单独兜住，拿不到就当「引擎状态未知」，绝不拖垮 list 与 llm。 */
+          var engineProbe = call({ op: 'engine_status' }).catch(function () {
+            return null
+          })
+          /* 通用设置同样是新增 op：拿不到就保持 null（UI 显示「未知」并降级） */
+          var settingsProbe = call({ op: 'settings_get' }).catch(function () {
+            return null
+          })
+          return Promise.all([call(listPayload), call({ op: 'llm' }), workspacesProbe, engineProbe, settingsProbe])
             .then(function (res) {
-              if (res[0] && res[0].ok) setItems(res[0].items || [])
+              var listed = res[0]
+              if (listed && listed.ok) {
+                setItems(listed.items || [])
+                /* current 可能不存在（旧后端）：当 null 处理，不报错 */
+                setCurrent(listed.current || null)
+              }
               if (res[1] && res[1].ok) setLlm(res[1])
+              if (res[3] && res[3].ok === true) setEngine(res[3])
+              else setEngine(null)
+              if (res[4] && res[4].ok === true && res[4].settings && typeof res[4].settings === 'object') {
+                setSettings(res[4].settings)
+              } else {
+                setSettings(null)
+              }
               setMsg('')
             })
             .catch(function (error) {
@@ -511,9 +834,103 @@ window.__ModuleLoader__.load({
             })
         }
 
+        var refresh = function () {
+          return refreshWith(cwdRef.current || '')
+        }
+
+        /* ── 挂载时：先认工作区，再拉数据；并订阅会话/工作区变化 ─────────────
+         *
+         * 任何一步失败都只是丢掉 cwd，不会中断面板渲染。
+         * 服务可能比面板晚就绪（可选 inject 回调是异步的），所以这里做
+         * 有限次重试：拿到 sessions 后补订阅，拿不到就安安静静当没有。
+         */
         React.useEffect(function () {
-          refresh()
+          var alive = true
+          var offSignals = null
+          var tries = 0
+          var retryTimer = null
+
+          var scan = function () {
+            var sessions = safeService(services, 'sessions')
+            var uiWorkspace = safeService(services, 'uiWorkspace')
+            var uiWorkspaces = safeService(services, 'workspaces')
+            return {
+              sessions: sessions,
+              uiWorkspace: uiWorkspace,
+              uiWorkspaces: uiWorkspaces,
+            }
+          }
+
+          var pick = function (found) {
+            var next = ''
+            try {
+              next = resolveCwd(found.sessions, found.uiWorkspace)
+            } catch (error) {
+              next = ''
+            }
+            return next
+          }
+
+          var bind = function (found) {
+            if (offSignals) return
+            offSignals = watchWorkspaceSignals(found.sessions, found.uiWorkspaces, function () {
+              if (!alive) return
+              var reread = scan()
+              var next = pick(reread)
+              if (next === cwdRef.current) return
+              cwdRef.current = next
+              setCwd(next)
+              refreshWith(next)
+            })
+          }
+
+          var found = scan()
+          var initial = pick(found)
+          cwdRef.current = initial
+          setCwd(initial)
+          refreshWith(initial)
+          bind(found)
+
+          /* 只有「服务还没到位」才值得重试；到位了就不再折腾 */
+          var tick = function () {
+            if (!alive) return
+            tries += 1
+            var again = scan()
+            if (again.sessions || again.uiWorkspace) {
+              bind(again)
+              var next = pick(again)
+              if (next !== cwdRef.current) {
+                cwdRef.current = next
+                setCwd(next)
+                refreshWith(next)
+              }
+            }
+            if (tries < 10 && !(again.sessions && again.uiWorkspace)) {
+              retryTimer = setTimeout(tick, 400)
+            }
+          }
+          retryTimer = setTimeout(tick, 400)
+
+          return function () {
+            alive = false
+            if (retryTimer) clearTimeout(retryTimer)
+            if (offSignals) offSignals()
+          }
         }, [])
+
+        /* 后端 llm 响应到了之后，把 base_url / model 预填进本地输入框，方便只改一项 */
+        React.useEffect(function () {
+          if (!llm) return
+          setBaseUrlInput(typeof llm.base_url === 'string' ? llm.base_url : '')
+          setModelInput(typeof llm.model === 'string' ? llm.model : '')
+        }, [llm && llm.base_url, llm && llm.model])
+
+        /* 后端 settings 到了之后，把每日整理时刻预填进输入框。
+         * 只在「用户还没改过」时填（dailyTimeDirty），避免把用户正在输入的内容覆盖掉。 */
+        React.useEffect(function () {
+          if (!settings || dailyTimeDirty.current) return
+          setDailyTimeInput(typeof settings.dailyConsolidateTime === 'string' ? settings.dailyConsolidateTime : '03:00')
+        }, [settings && settings.dailyConsolidateTime])
 
         // 更新状态：挂载时查一次（走 Host 侧 6 小时缓存），离开时不再回调。
         React.useEffect(function () {
@@ -647,30 +1064,544 @@ window.__ModuleLoader__.load({
           return h('span', { className: 'dm-badge ' + status }, status)
         }
 
-        var llmBlock = null
-        if (llm === null) {
-          llmBlock = h('div', { className: 'dm-hint' }, '读取中…')
-        } else if (llm.configured) {
-          llmBlock = h(
-            'div',
-            null,
-            h(
-              'div',
-              { className: 'dm-llm-line' },
-              h('span', null, h('span', { className: 'dm-code' }, llm.model), ' @ ', h('span', { className: 'dm-code' }, llm.base_url)),
-              h('span', { className: 'dm-hint' }, 'key：' + llm.api_key_masked),
+        /* ── API Key 动作（任务 3）──────────────────────────────────────────
+         *
+         * 铁律：input 的 value 只存在本地 state；保存成功后立即清空，
+         * 绝不用服务端返回的任何值回填 input。面板只显示 masked。
+         */
+        /* 双形态归一（契约 §3 v2）：llm / llm-set / llm-clear 同时回
+         * 顶层扁平字段（stored/scheme/api_key_masked/secret_path…）与嵌套
+         * `key` 对象。老后端只有扁平、未来也只有嵌套都能读。
+         * 铁律：任一侧给出真值就采信；读不到方案也绝不误报「未存储」。 */
+        var firstString = function () {
+          var n
+          for (n = 0; n < arguments.length; n += 1) {
+            var v = arguments[n]
+            if (typeof v === 'string' && v !== '') return v
+          }
+          return ''
+        }
+        var keyShapeOf = function (src) {
+          if (!src || typeof src !== 'object') return null
+          var nested = src.key && typeof src.key === 'object' ? src.key : null
+          var out = {
+            scheme: firstString(
+              nested && nested.scheme,
+              src.scheme,
+              nested && nested.available_scheme,
+              src.available_scheme,
+              '',
             ),
-            h('div', { className: 'dm-hint' }, '类型、键、状态与置信度都由它判定；你只管写内容。'),
+            available_scheme: firstString(
+              nested && nested.available_scheme,
+              src.available_scheme,
+              '',
+            ),
+            masked: firstString(src.api_key_masked, nested && nested.api_key_masked, ''),
+            path: firstString(nested && nested.path, src.secret_path, ''),
+            writable: null,
+            decryptable: null,
+            stored: false,
+          }
+          if (nested && typeof nested.writable === 'boolean') out.writable = nested.writable
+          else if (typeof src.writable === 'boolean') out.writable = src.writable
+          if (nested && typeof nested.decryptable === 'boolean') out.decryptable = nested.decryptable
+          else if (typeof src.decryptable === 'boolean') out.decryptable = src.decryptable
+
+          var flags = []
+          if (nested && typeof nested.stored === 'boolean') flags.push(nested.stored)
+          if (typeof src.stored === 'boolean') flags.push(src.stored)
+          if (flags.length) {
+            /* 两侧都给时取「或」：宁可少报一次错，也不要因为一侧缺失就说没存 */
+            out.stored = flags.indexOf(true) >= 0
+          } else if (out.scheme !== '' && out.scheme !== 'none') {
+            out.stored = true
+          } else if (out.masked !== '') {
+            /* 有掩码但没报方案：密文确实存在 */
+            out.stored = true
+          } else if (src.configured === true) {
+            /* 只有 configured 这一个信号：保守认为已配置，别亮红 */
+            out.stored = true
+          }
+          return out
+        }
+
+        var keySchemeLabel = function (scheme, stored) {
+          if (scheme === 'dpapi') return 'DPAPI 已加密'
+          if (scheme === 'aesgcm-file') return '本机文件加密'
+          if (scheme === 'none') return '未存储'
+          /* 方案字段缺失但密钥确实存着 → 「已存储（方案未知）」，绝不写「未存储」 */
+          if (stored === true) return '已存储（方案未知）'
+          return scheme ? String(scheme) : '未存储'
+        }
+        var keySchemeTone = function (scheme, stored) {
+          if (scheme === 'dpapi' || scheme === 'aesgcm-file') return 'key-ok'
+          return stored === true ? 'key-ok' : 'key-off'
+        }
+
+        var applyKeyResult = function (res, keyChanged) {
+          /* llm-set / llm-clear 都回 {ok, api_key_masked?, key?}（契约 §3 v2：
+           * 扁平 + 嵌套双形态）。缺字段时用本地兜底，不覆盖已有信息。
+           * 注意：只改 base_url / model 时不能用「配置成功」推出「已配置 LLM」，
+           * 否则卡片会亮绿灯显示「已就绪」而实际没有密钥。 */
+          if (!res || res.ok !== true) {
+            setMsg('密钥操作失败：' + ((res && (res.error || res.message)) || '未知错误'))
+            return false
+          }
+          var incoming = keyShapeOf(res)
+          /* 响应里到底有没有密钥信息？没有（例如只存 base_url/model）就别乱动灯 */
+          var hasKeyDetail = !!(
+            res.key && typeof res.key === 'object'
+          ) || typeof res.stored === 'boolean'
+            || typeof res.scheme === 'string'
+            || typeof res.api_key_masked === 'string'
+          var storedKnown = !!(
+            (res.key && typeof res.key.stored === 'boolean') || typeof res.stored === 'boolean'
           )
-        } else {
+          setLlm(function (prev) {
+            var base = prev || {}
+            var next = {
+              ok: true,
+              configured: base.configured === true,
+              base_url: base.base_url,
+              model: base.model,
+              api_key_masked: base.api_key_masked,
+              key: base.key,
+              config_path: base.config_path,
+            }
+            if (hasKeyDetail && incoming) {
+              /* 统一补齐成嵌套形态给界面读，扁平值也照样能进来 */
+              next.key = {
+                stored: incoming.stored === true,
+                scheme: incoming.scheme || 'none',
+                available_scheme: incoming.available_scheme || '',
+                path: incoming.path || '',
+                writable: incoming.writable,
+                decryptable: incoming.decryptable,
+              }
+              if (typeof res.api_key_masked === 'string') next.api_key_masked = res.api_key_masked
+            }
+            if (typeof res.base_url === 'string') next.base_url = res.base_url
+            if (typeof res.model === 'string') next.model = res.model
+            if (typeof next.api_key_masked !== 'string') next.api_key_masked = ''
+            /* 只有明确知道密钥在不在，才动 configured 这个灯 */
+            if (storedKnown) next.configured = incoming.stored === true
+            else if (keyChanged === true) next.configured = true
+            return next
+          })
+          return true
+        }
+
+        var saveKey = function () {
+          var raw = (keyInput || '').trim()
+          if (!raw) {
+            setMsg('请先填入 API Key')
+            return
+          }
+          setKeyBusy(true)
+          call({ op: 'llm-set', api_key: raw })
+            .then(function (res) {
+              if (applyKeyResult(res, true)) setMsg('密钥已保存（加密落盘，面板只回显掩码）')
+              /* 无论成功与否，输入框立刻清空：不让明文在界面上多留一秒 */
+              setKeyInput('')
+            })
+            .catch(function (error) {
+              setKeyInput('')
+              setMsg('保存密钥失败：' + error)
+            })
+            .then(function () {
+              setKeyBusy(false)
+            })
+        }
+
+        var clearKey = function () {
+          if (!window.confirm('确定清除已保存的 API Key 吗？\n清除后巩固引擎会退回规则模式。')) return
+          setKeyBusy(true)
+          call({ op: 'llm-clear' })
+            .then(function (res) {
+              if (!res || res.ok !== true) {
+                setMsg('清除失败：' + ((res && (res.error || res.message)) || '未知错误'))
+                return
+              }
+              setLlm(function (prev) {
+                var base = prev || {}
+                return {
+                  ok: true,
+                  configured: false,
+                  base_url: base.base_url,
+                  model: base.model,
+                  api_key_masked: '',
+                  key: res.key && typeof res.key === 'object' ? res.key : { stored: false, scheme: 'none' },
+                  config_path: base.config_path,
+                }
+              })
+              setKeyInput('')
+              setMsg('密钥已清除')
+            })
+            .catch(function (error) {
+              setMsg('清除密钥失败：' + error)
+            })
+            .then(function () {
+              setKeyBusy(false)
+            })
+        }
+
+        var saveEndpoint = function () {
+          var payload = { op: 'llm-set' }
+          if (typeof baseUrlInput === 'string' && baseUrlInput.trim()) payload.base_url = baseUrlInput.trim()
+          if (typeof modelInput === 'string' && modelInput.trim()) payload.model = modelInput.trim()
+          setKeyBusy(true)
+          call(payload)
+            .then(function (res) {
+              if (applyKeyResult(res)) setMsg('端点与模型已保存')
+            })
+            .catch(function (error) {
+              setMsg('保存配置失败：' + error)
+            })
+            .then(function () {
+              setKeyBusy(false)
+            })
+        }
+
+        /* ── 测试生成（契约 §3b）────────────────────────────────────────────
+         *
+         * 跑一次完整抽取 + 巩固（LLM 模式下真调），写操作全在后端临时库，
+         * 真实记忆一个字节都不动。前端这里只读展示结果：
+         * 不 refresh 列表、不动 cwd、不改任何其它 state，避免「测一下」污染面板。
+         * 结果区在测试前就占好位置，主人随时知道按钮会做什么。
+         */
+        var runEngineTest = function () {
+          if (testBusy) return
+          setTestBusy(true)
+          setTestError('')
+          var payload = { op: 'engine_test' }
+          /* cwd 用面板已有的值；拿不到就不传，让后端用内置探针句 + 全局作用域 */
+          if (cwdRef.current) payload.cwd = cwdRef.current
+          return call(payload)
+            .then(function (res) {
+              if (!res || res.ok !== true) {
+                setTestResult(null)
+                setTestError('测试失败：' + ((res && (res.error || res.message)) || '引擎未响应（该 op 可能还没上线）'))
+                return null
+              }
+              setTestResult(res)
+              return res
+            })
+            .catch(function (error) {
+              setTestResult(null)
+              setTestError('测试失败：' + error)
+              return null
+            })
+            .then(function () {
+              setTestBusy(false)
+            })
+        }
+
+        /* ── 通用设置：读改走 settings_get / settings_set ─────────────────
+         *
+         * 可选增强以前只能改 $DSH_HOME 的配置文件——用户根本不知道有这些功能。
+         * 现在一颗 Switch 就地切换，保存立即生效（后端写文件 + 热读）。
+         * 后端没上线时按钮禁用并注明原因，绝不假装保存成功。
+         */
+        var saveSetting = function (key, value) {
+          if (settingsBusy) return
+          setSettingsBusy(true)
+          /* 乐观更新：先把界面切过去，失败再弹回来——开关类交互不该有迟滞 */
+          var prev = settings
+          setSettings(function (s) {
+            var next = Object.assign({}, s || {})
+            next[key] = value
+            return next
+          })
+          /* ⚠️ 补丁对象必须用「变量的值」做属性名。
+           * 早期写成了字面量 { key: value }——发出去的键名就是字符串 "key"，
+           * 后端白名单里没有这个键 → 被静默忽略 → 返回未改动的设置 →
+           * 前端 setSettings(旧值) 把开关弹回原状。就是「点了又弹回去」的根因。 */
+          var patch = {}
+          patch[key] = value
+          return call({ op: 'settings_set', settings: patch })
+            .then(function (res) {
+              if (!res || res.ok !== true) {
+                setSettings(prev)
+                setMsg('保存设置失败：' + ((res && (res.error || res.message)) || '该功能可能还没上线'))
+                return null
+              }
+              /* 后端拒绝了某些键（白名单外/格式非法）时必须如实提示——
+               * 否则用户以为保存了，实际没生效，比直接报错更坑。 */
+              if (Array.isArray(res.rejected) && res.rejected.length > 0) {
+                setSettings(prev)
+                setMsg('以下设置项被拒绝（键名不合法或不在白名单）：' + res.rejected.join('、'))
+                return null
+              }
+              /* 后端回传规范后的值（可能带类型修正），以后端为准 */
+              if (res.settings && typeof res.settings === 'object') setSettings(res.settings)
+              setMsg('')
+              return res
+            })
+            .catch(function (error) {
+              setSettings(prev)
+              setMsg('保存设置失败：' + error)
+              return null
+            })
+            .then(function (result) {
+              /* 保存成功后解除「正在输入」标记，让后端值可以再次同步到输入框 */
+              if (result && result.ok === true) dailyTimeDirty.current = false
+              setSettingsBusy(false)
+            })
+        }
+
+        /* 每日整理时刻的提交：校验 HH:MM 后送后端；非法就地提示 */
+        var commitDailyTime = function () {
+          var value = (dailyTimeInput || '').trim()
+          if (!value) {
+            setMsg('请先填写时刻（HH:MM）')
+            return null
+          }
+          if (!/^([01]?\d|2[0-3]):([0-5]\d)$/.test(value)) {
+            setMsg('时刻格式不对：请用 24 小时制 HH:MM，例如 03:00')
+            return null
+          }
+          return saveSetting('dailyConsolidateTime', value)
+        }
+
+        var Switch = function (props) {
+          return h('button', {
+            type: 'button',
+            className: 'dm-switch',
+            role: 'switch',
+            'aria-checked': props.checked ? 'true' : 'false',
+            disabled: props.disabled === true,
+            onClick: props.onChange,
+          }, h('i'), props.label === undefined ? null : h('span', null, props.label))
+        }
+
+        /* ── 巩固引擎（LLM）卡片：掩码回显 + 密文方案徽标 + 明文输入框 ──────
+         *
+         * llm === null 表示还在读取：仍然渲染输入框（主人可能想直接贴 key），
+         * 只是把「当前密钥」一行换成读取中的提示。绝不整块消失。
+         */
+        var llmBlock = null
+        {
+          var llmData = llm && typeof llm === 'object' ? llm : null
+          /* 双形态归一：嵌套 key 优先，老后端的扁平字段照样能组装出等价对象。
+           * 后端还没上线 / 字段缺失时，masked 与 configured 也能推出「已存储」。 */
+          var keyShape = llmData ? keyShapeOf(llmData) : null
+          var scheme = keyShape ? keyShape.scheme : ''
+          var masked = keyShape ? keyShape.masked : ''
+          var stored = keyShape ? keyShape.stored === true : false
+
           llmBlock = h(
             'div',
-            null,
-            h('div', { className: 'dm-hint' }, '未配置。LLM 用来判定记忆的类型 / 键 / 重复 / 失效；没配置时走规则，解析会粗糙很多。'),
-            h('pre', { className: 'dm-pre' }, 'memory-consolidation\\mem.cmd llm set --api-key sk-...'),
-            h('div', { className: 'dm-hint' }, '默认端点 https://api.deepseek.com/v1 · 模型 deepseek-chat'),
+            { className: 'dm-key' },
+            h('div', { className: 'dm-key-row' },
+              h('span', { className: 'dm-key-label' }, '当前密钥'),
+              llmData === null
+                ? h('span', { className: 'dm-hint' }, '读取中…')
+                : (stored
+                    ? h('span', { className: 'dm-code' }, masked || '（已隐藏）')
+                    : h('span', { className: 'dm-key-label' }, '未保存')),
+              llmData === null
+                ? null
+                : h('span', { className: 'dm-badge ' + keySchemeTone(scheme, stored) }, keySchemeLabel(scheme, stored)),
+            ),
+
+            h('div', { className: 'dm-key-row' },
+              h('input', {
+                className: 'dm-key-input',
+                type: 'text',
+                autoComplete: 'off',
+                spellCheck: false,
+                placeholder: 'sk-...',
+                value: keyInput,
+                disabled: keyBusy,
+                onChange: function (event) { setKeyInput(event.target.value) },
+                onKeyDown: function (event) {
+                  if (event.key === 'Enter') saveKey()
+                },
+              }),
+              h('div', { className: 'dm-key-actions' },
+                h('button', {
+                  className: 'dm-btn primary tiny',
+                  disabled: keyBusy || !(keyInput || '').trim(),
+                  onClick: saveKey,
+                }, keyBusy ? '保存中…' : '保存密钥'),
+                h('button', {
+                  className: 'dm-btn tiny',
+                  disabled: keyBusy || !stored,
+                  onClick: clearKey,
+                }, '清除密钥'),
+              ),
+            ),
+            h('div', { className: 'dm-hint' },
+              '密钥用 Windows DPAPI 绑定当前用户加密存在本机（llm.secret），只在保存这一刻经手一次；',
+              '保存后输入框立即清空，面板永远只回显掩码。'),
+
+            h('div', { className: 'dm-key-row' },
+              h('span', { className: 'dm-key-label' }, '端点'),
+              h('input', {
+                className: 'dm-key-input',
+                type: 'text',
+                autoComplete: 'off',
+                placeholder: 'https://api.deepseek.com/v1',
+                value: baseUrlInput,
+                disabled: keyBusy,
+                onChange: function (event) { setBaseUrlInput(event.target.value) },
+              }),
+            ),
+            h('div', { className: 'dm-key-row' },
+              h('span', { className: 'dm-key-label' }, '模型'),
+              h('input', {
+                className: 'dm-key-input',
+                type: 'text',
+                autoComplete: 'off',
+                placeholder: 'deepseek-chat',
+                value: modelInput,
+                disabled: keyBusy,
+                onChange: function (event) { setModelInput(event.target.value) },
+              }),
+              h('div', { className: 'dm-key-actions' },
+                h('button', {
+                  className: 'dm-btn tiny',
+                  disabled: keyBusy,
+                  onClick: saveEndpoint,
+                }, '保存配置'),
+              ),
+            ),
+
+            stored || (llmData && llmData.configured)
+              ? h('div', { className: 'dm-hint' }, '类型、键、状态与置信度都由它判定；你只管写内容。')
+              : h('div', { className: 'dm-hint' }, '未配置时走规则判定，解析会粗糙很多；填上密钥即可切到 LLM。'),
           )
         }
+
+        /* ── 引擎状态标识区 + 测试生成（任务 6 / 契约 §3b）───────────────────
+         *
+         * engine 为 null（老后端没有这个 op、或读取失败）→ 显示「引擎状态未知」，
+         * 卡片照常渲染，绝不白屏。engine_test 同理：失败只写一行错误文案，
+         * 结果区永远占好位置，主人随时知道按钮会做什么。
+         */
+        var engineModeOf = function (mode) {
+          return mode === 'llm' || mode === 'rule' ? mode : ''
+        }
+        var engineLabelOf = function (mode) {
+          if (mode === 'llm') return 'LLM 生成模式'
+          if (mode === 'rule') return '规则引擎模式'
+          return '引擎状态未知'
+        }
+        var engineToneOf = function (mode) {
+          if (mode === 'llm') return 'on'
+          if (mode === 'rule') return 'rule'
+          return 'unknown'
+        }
+
+        var engineRow = null
+        var engineChecks = []
+        var engineReason = ''
+        if (engine && typeof engine === 'object') {
+          var engineMode = engineModeOf(typeof engine.engine === 'string' ? engine.engine : '')
+          var engineText = engineMode
+            ? engineLabelOf(engineMode)
+            : (typeof engine.engine_label === 'string' && engine.engine_label ? engine.engine_label : '引擎状态未知')
+          if (typeof engine.reason === 'string') engineReason = engine.reason
+          if (engine.checks && engine.checks.length) engineChecks = engine.checks
+          engineRow = h('span', { className: 'dm-engine-badge ' + (engineMode ? engineToneOf(engineMode) : 'unknown') }, engineText)
+        } else {
+          engineRow = h('span', { className: 'dm-engine-badge unknown' }, '引擎状态未知')
+        }
+
+        var testArea = null
+        if (testError) {
+          testArea = h('div', { className: 'dm-test' },
+            h('div', { className: 'dm-test-out' },
+              h('div', { className: 'dm-test-empty' }, testError),
+            ),
+          )
+        } else if (!testResult) {
+          testArea = h('div', { className: 'dm-test' },
+            h('div', { className: 'dm-test-note' },
+              '点「测试生成」会跑一次完整的抽取 + 巩固流程（LLM 模式下真实调用 API），',
+              '所有写操作落在临时数据库，不留下任何真实记忆。'),
+          )
+        } else {
+          var tr = testResult
+          var trMode = engineModeOf(typeof tr.engine === 'string' ? tr.engine : '')
+          var trText = trMode
+            ? engineLabelOf(trMode)
+            : (typeof tr.engine_label === 'string' && tr.engine_label ? tr.engine_label : '引擎状态未知')
+          var trHead = [
+            h('span', {
+              className: 'dm-engine-badge ' + (tr.degraded === true ? 'rule' : engineToneOf(trMode)),
+              key: 'mode',
+            }, trText),
+          ]
+          if (tr.elapsed_ms !== undefined && tr.elapsed_ms !== null) {
+            trHead.push(h('span', { className: 'dm-engine-val', key: 'ms' }, String(tr.elapsed_ms) + ' 毫秒'))
+          }
+          var trCount = tr.candidate_count !== undefined && tr.candidate_count !== null
+            ? tr.candidate_count
+            : (tr.candidates && tr.candidates.length ? tr.candidates.length : 0)
+          trHead.push(h('span', { className: 'dm-engine-val', key: 'count' }, '抽出候选 ' + trCount + ' 条'))
+
+          var trRows = tr.candidates && tr.candidates.length ? tr.candidates : []
+          var trBodies = []
+          var ti
+          for (ti = 0; ti < trRows.length && ti < 5; ti += 1) {
+            var cand = trRows[ti] || {}
+            trBodies.push(h('div', { className: 'dm-test-cand', key: 'c' + ti },
+              h('div', { className: 'dm-test-cand-key' },
+                (kindLabel(cand.kind) || '') + ' · ' + (cand.predicate || '') + ' = ' + (cand.object || '')),
+              h('div', { className: 'dm-test-cand-content' }, cand.summary || cand.content || ''),
+            ))
+          }
+
+          testArea = h('div', { className: 'dm-test' },
+            h('div', { className: 'dm-test-out' },
+              h('div', { className: 'dm-test-head' }, trHead),
+              tr.degraded === true
+                ? h('p', { className: 'dm-test-degrade' },
+                    '已降级：' + (typeof tr.degrade_reason === 'string' && tr.degrade_reason ? tr.degrade_reason : '原因未知'))
+                : null,
+              trRows.length
+                ? h('div', null, trBodies)
+                : h('div', { className: 'dm-test-empty' }, '没有抽出候选：这条探针句没被判定成可复用记忆。'),
+              trRows.length > 5
+                ? h('div', { className: 'dm-test-more' }, '（还有 ' + (trRows.length - 5) + ' 条候选未显示）')
+                : null,
+              h('div', { className: 'dm-test-note' },
+                typeof tr.note === 'string' && tr.note ? tr.note : '本测试在临时数据库执行，未写入任何真实记忆。'),
+            ),
+          )
+        }
+
+        var engineBlock = h('div', { className: 'dm-engine' },
+          h('div', { className: 'dm-engine-row' },
+            engineRow,
+            h('button', {
+              className: 'dm-btn tiny',
+              disabled: testBusy,
+              title: '跑一次完整生成流程，结果只读展示，不写入任何真实记忆',
+              onClick: runEngineTest,
+            }, testBusy ? '测试中…' : '测试生成'),
+          ),
+          engineReason ? h('p', { className: 'dm-engine-reason' }, engineReason) : null,
+          engineChecks.length
+            ? h('details', { className: 'dm-engine-checks' },
+                h('summary', null, '判定细节（' + engineChecks.length + ' 项）'),
+                h('ul', null,
+                  engineChecks.map(function (check, index) {
+                    var row = check || {}
+                    return h('li', { key: index },
+                      h('span', { className: row.ok === true ? 'dm-engine-check-ok' : 'dm-engine-check-off' },
+                        row.ok === true ? '✅' : '⚠️'),
+                      ' ' + (row.name || ('检查 ' + (index + 1))),
+                      row.detail ? h('span', { className: 'dm-engine-val' }, ' · ' + row.detail) : null,
+                    )
+                  }),
+                ),
+              )
+            : null,
+          testArea,
+        )
 
         var dialog = null
         if (modal) {
@@ -713,49 +1644,202 @@ window.__ModuleLoader__.load({
           )
         }
 
-        var list = items.length === 0
-          ? h('div', { className: 'dm-empty' },
-              h('div', { style: { fontSize: 22, marginBottom: 6 } }, '🐋'),
-              '还没有记忆。点右上角「新增记忆」，或者在会话里说一句偏好。')
-          : h(
+        /* ── 单条记忆（分组内复用）───────────────────────────────────────── */
+        var renderItem = function (item, index) {
+          // 迁移 002：优先显示 summary（人话），谓词只做脚注
+          var text = item.summary || item.content || ''
+          // 新契约：scope 标签用人话（workspace_title），不再只写「本工作区」
+          var where = ''
+          if (item.scope === 'workspace' || item.scope === 'project') {
+            where = item.workspace_title || ''
+          }
+          if (!where && item.scope === 'workspace') where = '已登记工作区'
+          if (!where && item.scope === 'project') where = '项目'
+          return h(
+            'div',
+            { className: 'dm-item' + (item.expired_by ? ' dm-item-expired' : ''), key: item.id || index },
+            h(
               'div',
-              { className: 'dm-list' },
-              items.map(function (item, index) {
-                // 迁移 002：优先显示 summary（人话），谓词只做脚注
-                var text = item.summary || item.content || ''
-                var where = ''
-                if (item.scope === 'workspace') where = '本工作区'
-                else if (item.scope === 'project') where = '项目'
-                return h(
-                  'div',
-                  { className: 'dm-item' + (item.expired_by ? ' dm-item-expired' : ''), key: item.id || index },
-                  h(
-                    'div',
-                    { className: 'dm-item-main' },
-                    h('div', { className: 'dm-item-top' },
-                      badge(item.status),
-                      where ? h('span', { className: 'dm-tag' }, where) : null,
-                      item.expired_by ? h('span', { className: 'dm-tag warn' }, '已失效：' + expiredLabel(item.expired_by)) : null,
-                      h('span', { className: 'dm-content' }, text),
-                    ),
-                    h('div', { className: 'dm-meta' },
-                      h('span', null, kindLabel(item.kind)),
-                      h('span', null, '置信度 ' + Number(item.confidence).toFixed(2)),
-                      h('span', null, '最近 ' + String(item.last_seen_at || '').slice(0, 10)),
-                      // 原始键名折叠成一个可展开的 details，默认不显示
-                      h('details', { className: 'dm-raw' },
-                        h('summary', null, '原始键名'),
-                        h('code', null, item.predicate + ' = ' + item.object),
-                      ),
+              { className: 'dm-item-main' },
+              h('div', { className: 'dm-item-top' },
+                badge(item.status),
+                where ? h('span', { className: 'dm-tag' }, where) : null,
+                item.expired_by ? h('span', { className: 'dm-tag warn' }, '已失效：' + expiredLabel(item.expired_by)) : null,
+                h('span', { className: 'dm-content' }, text),
+              ),
+              h('div', { className: 'dm-meta' },
+                h('span', null, kindLabel(item.kind)),
+                h('span', null, '置信度 ' + Number(item.confidence).toFixed(2)),
+                h('span', null, '最近 ' + String(item.last_seen_at || '').slice(0, 10)),
+                // 原始键名折叠成一个可展开的 details，默认不显示
+                h('details', { className: 'dm-raw' },
+                  h('summary', null, '原始键名'),
+                  h('code', null, item.predicate + ' = ' + item.object),
+                ),
+              ),
+            ),
+            h('div', { className: 'dm-actions' },
+              h('button', { className: 'dm-btn tiny', onClick: function () { openEdit(item) } }, '编辑'),
+              h('button', { className: 'dm-btn tiny', onClick: function () { removeRow(item) } }, '删除'),
+            ),
+          )
+        }
+
+        var renderItemList = function (rows, prefix) {
+          return h(
+            'div',
+            { className: 'dm-list' },
+            rows.map(function (item, index) {
+              return renderItem(item, prefix + '-' + index)
+            }),
+          )
+        }
+
+        /* ── 按契约 §5 分组：当前工作区 → 其它工作区（可按 ref 折叠）→ 全局 ──
+         *
+         * current 由后端给出；老后端没有 current 字段时 current=null，
+         * 此时全部 workspace/project 条目都算「其它工作区」，global 照常单独成组。
+         * 分不出组的条目一律塞进「其它工作区」的「未标注」子组，保证不丢数据。
+         */
+        var currentRef = current && typeof current.workspace_ref === 'string' ? current.workspace_ref : ''
+        var currentTitle = (current && (current.title || current.path)) || ''
+
+        var globalItems = []
+        var currentItems = []
+        var otherGroups = [] // [{ ref, title, rows }]
+        var newItem = function (id) {
+          return { ref: id, title: '', rows: [] }
+        }
+        var otherIndex = {}
+        var i
+        for (i = 0; i < items.length; i += 1) {
+          var one = items[i] || {}
+          if (one.scope === 'global') {
+            globalItems.push(one)
+            continue
+          }
+          var ref = typeof one.scope_ref === 'string' ? one.scope_ref : ''
+          if (ref && ref === currentRef) {
+            currentItems.push(one)
+            continue
+          }
+          var groupKey = ref || '__unscoped__'
+          if (!Object.prototype.hasOwnProperty.call(otherIndex, groupKey)) {
+            otherIndex[groupKey] = otherGroups.length
+            var made = newItem(groupKey)
+            made.title = one.workspace_title || (ref ? ref : '未标注工作区')
+            otherGroups.push(made)
+          }
+          otherGroups[otherIndex[groupKey]].rows.push(one)
+        }
+
+        var list = null
+        if (items.length === 0) {
+          list = h('div', { className: 'dm-empty' },
+            h('div', { style: { fontSize: 22, marginBottom: 6 } }, '🐋'),
+            '还没有记忆。点右上角「新增记忆」，或者在会话里说一句偏好。')
+        } else {
+          var groups = []
+
+          // ① 当前工作区
+          if (currentRef) {
+            groups.push(h(
+              'div',
+              { className: 'dm-group', key: 'current' },
+              h('div', { className: 'dm-group-head' },
+                h('div', { className: 'dm-group-title' },
+                  h('span', null, '当前工作区 · ' + (currentTitle || currentRef)),
+                ),
+                h('span', { className: 'dm-group-count' }, currentItems.length + ' 条'),
+              ),
+              h('div', { className: 'dm-group-body' },
+                currentItems.length
+                  ? renderItemList(currentItems, 'cur')
+                  : h('div', { className: 'dm-group-empty' }, '这个工作区还没有专属记忆'),
+              ),
+            ))
+          }
+
+          // ② 其它工作区（可折叠，内部再按 scope_ref 分小组）
+          if (otherGroups.length) {
+            /* 用工厂函数隔离每个子分组的闭包：var 在循环里会被共用，
+             * 直接内联会把所有按钮都绑到最后一组（点一个全展开）。 */
+            var buildSubgroup = function (grp, isFolded, groupIndex) {
+              return h(
+                'div',
+                { className: 'dm-subgroup', key: 'sub-' + grp.ref },
+                h('div', { className: 'dm-subgroup-head' },
+                  h('span', { className: 'dm-subgroup-title' },
+                    h('button', {
+                      className: 'dm-group-toggle',
+                      type: 'button',
+                      'aria-expanded': !isFolded,
+                      onClick: function () {
+                        var next = {}
+                        var k
+                        for (k in folded) {
+                          if (Object.prototype.hasOwnProperty.call(folded, k)) next[k] = folded[k]
+                        }
+                        next[grp.ref] = !isFolded
+                        setFolded(next)
+                      },
+                    },
+                      h('span', { className: 'dm-group-caret' + (isFolded ? '' : ' open') }, '›'),
+                      grp.title,
                     ),
                   ),
-                  h('div', { className: 'dm-actions' },
-                    h('button', { className: 'dm-btn tiny', onClick: function () { openEdit(item) } }, '编辑'),
-                    h('button', { className: 'dm-btn tiny', onClick: function () { removeRow(item) } }, '删除'),
-                  ),
-                )
-              }),
-            )
+                  h('span', { className: 'dm-group-count' }, grp.rows.length + ' 条'),
+                ),
+                isFolded ? null : renderItemList(grp.rows, 'o-' + groupIndex),
+              )
+            }
+            var otherBodies = []
+            var g
+            for (g = 0; g < otherGroups.length; g += 1) {
+              otherBodies.push(buildSubgroup(otherGroups[g], folded[otherGroups[g].ref] === true, g))
+            }
+            groups.push(h(
+              'div',
+              { className: 'dm-group', key: 'other' },
+              h('div', { className: 'dm-group-head' },
+                h('button', {
+                  className: 'dm-group-toggle',
+                  type: 'button',
+                  'aria-expanded': otherOpen,
+                  onClick: function () { setOtherOpen(!otherOpen) },
+                },
+                  h('span', { className: 'dm-group-caret' + (otherOpen ? ' open' : '') }, '›'),
+                  '其它工作区',
+                ),
+                h('span', { className: 'dm-group-count' }, otherGroups.length + ' 组'),
+              ),
+              otherOpen ? h('div', { className: 'dm-group-body' }, otherBodies) : null,
+            ))
+          }
+
+          // ③ 用户画像（全局）
+          if (globalItems.length) {
+            groups.push(h(
+              'div',
+              { className: 'dm-group', key: 'global' },
+              h('div', { className: 'dm-group-head' },
+                h('div', { className: 'dm-group-title' }, '用户画像（全局）'),
+                h('span', { className: 'dm-group-count' }, globalItems.length + ' 条'),
+              ),
+              h('div', { className: 'dm-group-body' }, renderItemList(globalItems, 'glb')),
+            ))
+          }
+
+          list = h('div', { className: 'dm-groups', key: 'groups' }, groups)
+        }
+
+        /* 识别不到工作区时，无论列表空不空都在最上方挂一条提示（契约 §5） */
+        if (!currentRef) {
+          list = [
+            h('div', { className: 'dm-hintbar', key: 'nocwd' }, '未识别到当前工作区，仅显示用户记忆（全局）。'),
+            list,
+          ]
+        }
 
         // ── 插件小图标（鲸鱼娘 Q 版）：和标题并排，尺寸跟随行高
         // ── 插件小图标（Q 版鲸鱼娘，内嵌位图）
@@ -798,6 +1882,18 @@ window.__ModuleLoader__.load({
           var tone = (restartRequired || updateAvailable) ? 'warn' : ((info && info.error) ? 'error' : 'ok')
           var checkedText = (info && info.checkedAt) ? String(info.checkedAt).replace('T', ' ').slice(0, 16) : '尚未检查'
 
+          /* 多源链上线后才有 source / diagnostics / quota；字段缺失时整块不渲染 */
+          var sourceLabel = (info && typeof info.source === 'string' && info.source) ? info.source : ''
+          var diagRows = (info && info.diagnostics && info.diagnostics.length) ? info.diagnostics : []
+          var quotaText = ''
+          if (info && info.quota && typeof info.quota === 'object') {
+            var quotaRemaining = info.quota.remaining
+            if (quotaRemaining !== undefined && quotaRemaining !== null) {
+              quotaText = '匿名配额剩余 ' + quotaRemaining
+              if (info.quota.reset) quotaText += ' · 重置 ' + String(info.quota.reset)
+            }
+          }
+
           return h(
             'div',
             { className: 'dm-update' },
@@ -816,6 +1912,26 @@ window.__ModuleLoader__.load({
               h('span', { className: 'dm-chip-group' }, h('span', { className: 'dm-chip-label' }, '最新版本'), h('span', { className: 'dm-chip' }, latestVersion !== null ? latestVersion : '—')),
             ),
             h('div', { className: 'dm-update-status dm-update-status-' + tone }, statusText),
+            sourceLabel ? h('div', { className: 'dm-update-source' }, '成功源：' + sourceLabel + (quotaText ? ' · ' + quotaText : '')) : null,
+            (info && info.error && diagRows.length)
+              ? h('details', { className: 'dm-update-diag' },
+                  h('summary', null, '查看诊断（' + diagRows.length + ' 个源）'),
+                  h('ul', null,
+                    diagRows.map(function (d, i) {
+                      var row = d || {}
+                      var src = row.source || row.url || ('源 ' + (i + 1))
+                      var bits = []
+                      if (row.status !== undefined && row.status !== null) bits.push('HTTP ' + row.status)
+                      if (row.ms !== undefined && row.ms !== null) bits.push(row.ms + 'ms')
+                      return h('li', { key: i },
+                        h('span', { className: 'dm-update-diag-src' }, src),
+                        bits.length ? ' · ' + bits.join(' · ') : null,
+                        row.error ? h('span', { className: 'dm-update-diag-err' }, ' · ' + row.error) : null,
+                      )
+                    }),
+                  ),
+                )
+              : null,
             h(
               'div',
               { className: 'dm-update-actions' },
@@ -824,6 +1940,12 @@ window.__ModuleLoader__.load({
                 disabled: !!busy,
                 onClick: function () { props.onCheck() },
               }, busy === 'checking' ? '检查中…' : '检查更新'),
+              h('button', {
+                className: 'dm-btn tiny',
+                disabled: !!busy,
+                title: '忽略 6 小时缓存与失败退避，立即重新探测所有源',
+                onClick: function () { props.onForceCheck() },
+              }, '强制检查'),
               h('button', {
                 className: 'dm-btn primary',
                 disabled: !!busy || !canSelfUpdate || (!updateAvailable && !restartRequired),
@@ -840,26 +1962,50 @@ window.__ModuleLoader__.load({
           )
         }
 
-        var body = h(
-          'div',
-          { className: 'dm-root' },
-          h(
-            'div',
-            { className: 'dm-head' },
-            h('h2', null, h(PluginIcon, null), '长期记忆'),
-            h('button', { className: 'dm-btn primary', onClick: openNew }, '＋ 新增记忆'),
-          ),
-          h(UpdateCard, {
-            info: updateInfo,
-            busy: updateBusy,
-            onCheck: function () { void loadUpdate(true) },
-            onApply: function () { void runUpdate() },
-            onStar: function () { void openRepo() },
-          }),
-          h('p', { className: 'dm-sub' },
-            '跨会话自动调取。你只负责写下这件事本身，类型、键、置信度由 LLM 判定；修改会写审计日志并刷新注入快照。'),
+        /* ── 页签条（学 our-free-model 的 ofm_tabs 交互）───────────────────
+         * 记忆页放最前（用户最常看），带条数角标；后三类是低频操作。 */
+        var tabs = [
+          ['memory', '记忆', items.length],
+          ['engine', '巩固引擎', null],
+          ['settings', '设置', null],
+          ['upgrade', '插件升级', null],
+        ]
+        var tabBar = h('div', { className: 'dm-tabs', role: 'tablist' },
+          tabs.map(function (t) {
+            return h('button', {
+              key: t[0],
+              type: 'button',
+              role: 'tab',
+              'aria-selected': tab === t[0] ? 'true' : 'false',
+              className: 'dm-tab',
+              onClick: function () { setTab(t[0]) },
+            }, t[1], t[2] === null ? null : h('span', { className: 'dm-tabnum' }, String(t[2])))
+          }))
 
-          h(
+        /* ── 各页内容：照 our-free-model 的「每页一个块」结构 ───────────── */
+        var page = null
+        if (tab === 'memory') {
+          page = h(
+            'div',
+            { className: 'dm-card' },
+            h(
+              'div',
+              { className: 'dm-card-head' },
+              h('div', { className: 'dm-card-title' },
+                '记忆',
+                currentRef
+                  ? h('span', { className: 'dm-tag' }, currentTitle || currentRef)
+                  : null,
+              ),
+              h('span', { className: 'dm-hint' },
+                items.length + ' 条'
+                + (currentRef ? ' · 当前 ' + currentItems.length : ' · 未识别工作区')
+                + (msg ? ' · ' + msg : '')),
+            ),
+            list,
+          )
+        } else if (tab === 'engine') {
+          page = h(
             'div',
             { className: 'dm-card' },
             h(
@@ -869,22 +2015,97 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'dm-dot ' + (llm && llm.configured ? 'on' : 'off') }),
                 '巩固引擎（LLM）',
               ),
-              h('span', { className: 'dm-hint' }, llm && llm.configured ? '已就绪' : '规则模式'),
+              /* 引擎徽标：真实判定由后端 engine_status 给出，不靠前端猜 */
+              engineRow,
             ),
             llmBlock,
-          ),
+            engineBlock,
+          )
+        } else if (tab === 'settings') {
+          /* 通用设置页：把「可选增强」做成看得见、点得动的开关 */
+          var autoOn = settings ? settings.autoConsolidate === true : false
+          var dailyOn = settings ? settings.dailyConsolidate === true : false
+          var settingsKnown = settings !== null
+          page = h(
+            'div',
+            { className: 'dm-settings' },
+            h('div', { className: 'dm-settings-title' }, '通用设置'),
+            h('div', { className: 'dm-setting-row' },
+              h('div', null,
+                h('div', { className: 'dm-setting-name' }, '自动整理记忆'),
+                h('div', { className: 'dm-setting-hint' },
+                  '收件箱攒够后自动抽取并巩固（无需手动跑命令或配定时任务）。',
+                  '关闭后仍会采集与注入，但不再自动整理，除非你手动跑 flush-inbox。')),
+              h(Switch, {
+                checked: autoOn,
+                disabled: !settingsKnown || settingsBusy,
+                onChange: function () { void saveSetting('autoConsolidate', !autoOn) },
+              }),
+            ),
+            h('div', { className: 'dm-setting-row' },
+              h('div', null,
+                h('div', { className: 'dm-setting-name' }, '每日定时整理（LLM 巩固）'),
+                h('div', { className: 'dm-setting-hint' },
+                  '每天在固定时刻整理一次，并顺带做生命周期维护（依赖消失 / TTL）。',
+                  '会真实调用上面的 LLM（没配则走规则）。与上面的自动整理可以并存。',
+                  '对应旧版「LLM 每日巩固」定时任务——现在不用再配外部任务了。')),
+              h(Switch, {
+                checked: dailyOn,
+                disabled: !settingsKnown || settingsBusy,
+                onChange: function () { void saveSetting('dailyConsolidate', !dailyOn) },
+              }),
+            ),
+            h('div', { className: 'dm-setting-row' },
+              h('div', null,
+                h('div', { className: 'dm-setting-name' }, '每日整理时刻'),
+                h('div', { className: 'dm-setting-hint' }, '24 小时制 HH:MM，本地时间；默认凌晨 03:00。')),
+              h('input', {
+                className: 'dm-key-input',
+                type: 'text',
+                style: { width: 90, textAlign: 'center' },
+                value: dailyTimeInput,
+                placeholder: '03:00',
+                disabled: !settingsKnown || settingsBusy,
+                onChange: function (event) { dailyTimeDirty.current = true; setDailyTimeInput(event.target.value) },
+                onKeyDown: function (event) {
+                  if (event.key === 'Enter') void commitDailyTime()
+                },
+              }),
+              h('button', {
+                className: 'dm-btn tiny',
+                disabled: !settingsKnown || settingsBusy,
+                onClick: function () { void commitDailyTime() },
+              }, '保存时刻'),
+            ),
+            h('div', { className: 'dm-hint' },
+              settingsKnown
+                ? '开关保存在本机配置（' + '$DSH_HOME/dsh-tide-memory.json' + '），立即生效。'
+                : '设置接口不可用（后端可能还没升级到 2.2.0）——此时请手动编辑配置文件。'),
+          )
+        } else {
+          page = h(UpdateCard, {
+            info: updateInfo,
+            busy: updateBusy,
+            onCheck: function () { void loadUpdate(false) },
+            onForceCheck: function () { void loadUpdate(true) },
+            onApply: function () { void runUpdate() },
+            onStar: function () { void openRepo() },
+          })
+        }
 
+        var body = h(
+          'div',
+          { className: 'dm-root' },
           h(
             'div',
-            { className: 'dm-card' },
-            h(
-              'div',
-              { className: 'dm-card-head' },
-              h('div', { className: 'dm-card-title' }, '全部记忆'),
-              h('span', { className: 'dm-hint' }, items.length + ' 条' + (msg ? ' · ' + msg : '')),
-            ),
-            list,
+            { className: 'dm-head' },
+            h('h2', null, h(PluginIcon, null), '长期记忆'),
+            tab === 'memory'
+              ? h('button', { className: 'dm-btn primary', onClick: openNew }, '＋ 新增记忆')
+              : null,
           ),
+          tabBar,
+          page,
         )
 
         // 弹窗挂到 body：设置面板祖先可能有 transform/contain，fixed 会失效
@@ -916,7 +2137,47 @@ window.__ModuleLoader__.load({
         }
 
         injectStyle()
-        var Panel = makePanel(React, ReactDOM)
+
+        /* ── 可选服务探测（sessions / workspaces / uiWorkspace）─────────────
+         *
+         * 这里刻意【不】把它们写进 settings.section 的 inject 依赖列表：
+         * cordis 的 inject 是「全部就绪才回调」，一旦 uiWorkspace 没注册
+         * （无头环境、裁剪版宿主），整块设置页就永远不注册——那才是真白屏。
+         * 所以：
+         *   ① 主路径只依赖 slots，保证 section 一定注册得上；
+         *   ② 再单独 inject 一次这三个服务，拿到了就缓存，拿不到就算了；
+         *   ③ 面板内部还有 owner.get 兜底 + 全程 try/catch。
+         * 三层下来最差情况是「认不出工作区」，列表照常显示 global 记忆。
+         */
+        var serviceCache = {}
+        function remember(name) {
+          return function (owner) {
+            try {
+              var svc = owner && typeof owner.get === 'function' ? owner.get(name) : (owner ? owner[name] : null)
+              if (svc !== undefined && svc !== null) serviceCache[name] = svc
+            } catch (error) {
+              /* 拿不到就算了，面板还有 owner.get 兜底 */
+            }
+          }
+        }
+        var optionalNames = ['sessions', 'workspaces', 'uiWorkspace']
+        var optionalIdx
+        for (optionalIdx = 0; optionalIdx < optionalNames.length; optionalIdx += 1) {
+          try {
+            ctx.inject([optionalNames[optionalIdx]], remember(optionalNames[optionalIdx]))
+          } catch (error) {
+            console.warn('[dsh-tide-memory] 可选服务 ' + optionalNames[optionalIdx] + ' 探测失败，已降级', error)
+          }
+        }
+
+        var Panel = makePanel(React, ReactDOM, {
+          cache: serviceCache,
+          resolve: function (name) {
+            if (!name) return null
+            if (Object.prototype.hasOwnProperty.call(serviceCache, name)) return serviceCache[name]
+            return null
+          },
+        })
 
         ctx.inject(['slots'], function (owner) {
           var slots = owner.get ? owner.get('slots') : owner.slots

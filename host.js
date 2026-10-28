@@ -58,6 +58,31 @@ const DEFAULTS = {
   /** 开场无条件注入用户画像（不靠相似度） */
   profileInjection: true,
   profileMaxItems: 5,
+  /**
+   * 自动巩固（零配置）。
+   * 采集与注入本来就是插件自动做的；巩固原来要靠手动命令或自建定时任务，
+   * 结果新机器装完永远没有记忆可注入。这几个默认值把它变成开箱即用。
+   * 想回到「完全手动」就设 autoConsolidate:false。
+   */
+  autoConsolidate: true,
+  /** 启动后多久跑第一次（毫秒）：给宿主与数据目录一点时间 */
+  autoConsolidateDelayMs: 60000,
+  /** 之后每隔多久检查一次（毫秒）：默认 30 分钟 */
+  autoConsolidateIntervalMs: 1800000,
+  /** inbox 至少攒够几条才值得起一次 Python 进程 */
+  autoConsolidateMinEntries: 1,
+  /** 两次巩固之间的最小间隔（毫秒）：防止反复起进程 */
+  autoConsolidateMinIntervalMs: 300000,
+  /** 单次巩固的超时（毫秒）：LLM 抽取可能慢，给足 5 分钟 */
+  autoConsolidateTimeoutMs: 300000,
+  /**
+   * 每日整理（对应旧「LLM 每日巩固」定时任务）：在固定时刻跑一次
+   * flush-inbox + maintain。默认关——常规整理已由上面的周期检查覆盖，
+   * 这里给的是「每天固定时间整理一次 + 顺带做生命周期维护」的选项。
+   */
+  dailyConsolidate: false,
+  /** 每日整理的时刻，HH:MM 本地时间（对照旧任务习惯是凌晨 03:00） */
+  dailyConsolidateTime: '03:00',
 }
 
 /**
@@ -488,6 +513,296 @@ function callPython(config, body) {
 }
 
 // --------------------------------------------------------------------------- //
+// 自动巩固调度（零配置）
+//
+// 设计取舍：
+//   · 为什么不挂 DSH 的调度服务：宿主调度是会话级的，且留给主人自己表达意图；
+//     插件只保证「装完就能用」。自带定时器让新机器无需任何配置即可工作。
+//   · 为什么先延迟再跑：宿主刚启动时数据目录可能还没建好，Python 也在冷启动。
+//   · 为什么按 inbox 条数判阈值：巩固要起 Python 进程，空跑纯属浪费；
+//     攒到一定量再跑，既省资源又不丢内容。
+//   · 为什么用 execFile 而不是 spawn detached：我们需要拿到退出码与输出，
+//     好在日志里如实报告；异步执行不会阻塞会话。
+// --------------------------------------------------------------------------- //
+
+/** 巩固是否正在跑（进程内单飞，避免并发写同一个库）。 */
+let consolidateChild = null
+/** 上次巩固的时间戳（毫秒），用于「至少间隔多久才再跑」。 */
+let lastConsolidateAt = 0
+
+/** 数一下 inbox 里有多少条待处理的采集记录。 */
+function countInboxEntries(inboxPath) {
+  try {
+    if (!existsSync(inboxPath)) return 0
+    const text = readFileSync(inboxPath, 'utf8')
+    let n = 0
+    for (const line of text.split('\n')) {
+      if (line.trim().length > 0) n += 1
+    }
+    return n
+  } catch {
+    return 0
+  }
+}
+
+/** 挑一个能用的 Python（与探针/安装共用同一套候选顺序）。 */
+function pickRuntimePython(config) {
+  for (const candidate of candidatePythons(config)) {
+    const path = candidate.path
+    if (!path) continue
+    if (path === 'python' || path === 'python3') return path
+    if (existsSync(path)) return path
+  }
+  return null
+}
+
+/**
+ * 跑一次巩固。返回 { ok, ran, reason, entries, stdout?, stderr? }。
+ *
+ * **绝不抛异常、绝不阻塞调用方**：巩固失败不该影响主人说话。
+ */
+function runConsolidateOnce(config, reason) {
+  return new Promise((resolvePromise) => {
+    if (consolidateChild !== null) {
+      resolvePromise({ ok: false, ran: false, reason: 'busy' })
+      return
+    }
+
+    const entries = countInboxEntries(config.inbox)
+    const idleMs = Date.now() - lastConsolidateAt
+    const minIdle = config.autoConsolidateMinIntervalMs ?? 0
+    if (entries < (config.autoConsolidateMinEntries ?? 1)) {
+      resolvePromise({ ok: true, ran: false, reason: 'inbox-empty', entries })
+      return
+    }
+    // 距上次太近就别再跑（防止反复起进程）
+    if (lastConsolidateAt > 0 && idleMs < minIdle) {
+      resolvePromise({ ok: true, ran: false, reason: 'too-soon', entries, idleMs })
+      return
+    }
+
+    const python = pickRuntimePython(config)
+    if (!python) {
+      ctxLog(`自动巩固跳过（${reason}）：找不到可用的 Python 3.10+；采集与注入不受影响`)
+      resolvePromise({ ok: false, ran: false, reason: 'no-python', entries })
+      return
+    }
+
+    // 配了 LLM 就带上 --llm（抽取更准）；没配就走规则，毫秒级
+    const args = [MEM_PY, 'flush-inbox']
+    if (hasUsableLlm()) args.push('--llm')
+
+    lastConsolidateAt = Date.now()
+    consolidateChild = execFile(
+      python,
+      args,
+      { cwd: MEM_DIR, timeout: config.autoConsolidateTimeoutMs ?? 300000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+      (error, stdout, stderr) => {
+        consolidateChild = null
+        const out = (stdout || '').trim()
+        const err = (stderr || '').trim()
+        if (error) {
+          ctxLog(`自动巩固失败（${reason}）：${err || error.message}`)
+          resolvePromise({ ok: false, ran: true, reason, entries, stdout: out, stderr: err, error: error.message })
+          return
+        }
+        ctxLog(`自动巩固完成（${reason}）：${entries} 条采集 → ${out || '(无输出)'}`)
+        resolvePromise({ ok: true, ran: true, reason, entries, stdout: out, stderr: err })
+      },
+    )
+  })
+}
+
+/** 插件日志出口。ctx 在各处不方便传递时用一个模块级别的引用。 */
+let activeCtx = null
+function ctxLog(message) {
+  try {
+    activeCtx?.logger?.info?.(`dsh-tide-memory: ${message}`)
+  } catch {
+    /* 日志失败无所谓 */
+  }
+}
+
+/** 有可用的 LLM 配置（配了 base_url/model 且密钥能取到）。 */
+function hasUsableLlm() {
+  try {
+    const configFile = join(DSH_HOME, 'dsh-tide-memory', 'llm.json')
+    if (!existsSync(configFile)) return false
+    const parsed = JSON.parse(readFileSync(configFile, 'utf8'))
+    if (typeof parsed?.base_url !== 'string' || typeof parsed?.model !== 'string') return false
+    if (!parsed.base_url || !parsed.model) return false
+    // 密钥存在与否交给 Python 判断（它才知道密文能否解开）；
+    // 这里只要配置文件像样就带上 --llm，密钥不usable 时 Python 会自己降级。
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 装上自动巩固。默认行为：
+ *   · 启动后 `autoConsolidateDelayMs`（默认 60 秒）跑第一次
+ *   · 之后每 `autoConsolidateIntervalMs`（默认 30 分钟）检查一次
+ *   · inbox 少于 `autoConsolidateMinEntries`（默认 1 条）就跳过
+ * 全部可用 `enabled:false` / 三个数值项在 config.json 里调节；
+ * `autoConsolidate:false` 可整体关掉（回到「完全手动」的旧行为）。
+ */
+function startAutoConsolidate(ctx, config) {
+  activeCtx = ctx
+  if (config.autoConsolidate === false) {
+    ctx.logger?.info?.('dsh-tide-memory: 自动巩固已关闭（config.autoConsolidate=false）')
+    return
+  }
+
+  const delayMs = Math.max(0, Number(config.autoConsolidateDelayMs ?? 60000))
+  const intervalMs = Math.max(60000, Number(config.autoConsolidateIntervalMs ?? 1800000))
+  let firstTimer = null
+  let loopTimer = null
+
+  // 启动第一次：给宿主和数据目录一点时间，别和启动流程抢资源
+  firstTimer = setTimeout(() => {
+    firstTimer = null
+    void runConsolidateOnce(config, 'startup')
+  }, delayMs)
+  firstTimer.unref?.()
+
+  loopTimer = setInterval(() => {
+    void runConsolidateOnce(config, 'interval')
+  }, intervalMs)
+  loopTimer.unref?.()
+
+  ctx.logger?.info?.(
+    `dsh-tide-memory: 自动巩固已启用（启动后 ${Math.round(delayMs / 1000)}s 首次，` +
+    `之后每 ${Math.round(intervalMs / 60000)} 分钟检查一次；可设 autoConsolidate=false 关闭）`,
+  )
+
+  // 卸载时停掉定时器并清掉引用——不留悬挂回调
+  ctx.effect?.(() => () => {
+    if (firstTimer !== null) clearTimeout(firstTimer)
+    if (loopTimer !== null) clearInterval(loopTimer)
+    firstTimer = null
+    loopTimer = null
+    if (dailyTimer !== null) clearTimeout(dailyTimer)
+    dailyTimer = null
+    activeCtx = null
+  }, 'dsh-tide-memory: auto consolidate timers')
+
+  // 每日整理：固定时刻跑 flush-inbox + maintain（对应旧「LLM 每日巩固」任务）
+  startDailyConsolidate(ctx, config)
+}
+
+// --------------------------------------------------------------------------- //
+// 每日整理（对应旧「LLM 每日巩固」定时任务）
+//
+// 与周期整理的区别：
+//   · 周期整理（autoConsolidate）：inbox 攒够就跑，**只做 flush-inbox**
+//   · 每日整理（dailyConsolidate）：固定时刻跑一次，**flush-inbox + maintain**，
+//     maintain 会做依赖检查与 TTL 失效——生命周期维护原来只能靠手动或外部任务
+//
+// 实现是「自算下一次触发点」的单发 setTimeout：到点执行 → 算下一个明天同一时刻
+// → 再排。比 setInterval 每分钟轮询省事，也不依赖宿主进程常驻精度（错过就等
+// 下一个周期检查顺带处理 inbox，maintain 在下次启动后的每日触发补上）。
+// --------------------------------------------------------------------------- //
+
+let dailyTimer = null
+
+/** 解析 HH:MM 为 {hour, minute}；非法格式返回 null（fail-closed，回落默认 03:00）。 */
+function parseDailyTime(raw) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(raw ?? '').trim())
+  if (!m) return { hour: 3, minute: 0 }
+  const hour = Number(m[1])
+  const minute = Number(m[2])
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return { hour: 3, minute: 0 }
+  return { hour, minute }
+}
+
+/** 距下一个「今天的 HH:MM（已过则取明天）」还有多少毫秒。 */
+function msUntilNextDaily(hour, minute) {
+  const now = new Date()
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0)
+  if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1)
+  return next.getTime() - now.getTime()
+}
+
+/** 每日整理的执行体：flush-inbox（带 LLM 如可用）+ maintain，串行执行。 */
+function runDailyConsolidate(config) {
+  return new Promise((resolvePromise) => {
+    if (consolidateChild !== null) {
+      resolvePromise({ ok: false, ran: false, reason: 'busy' })
+      return
+    }
+    const python = pickRuntimePython(config)
+    if (!python) {
+      ctxLog('每日整理跳过：找不到可用的 Python 3.10+')
+      resolvePromise({ ok: false, ran: false, reason: 'no-python' })
+      return
+    }
+
+    const useLlm = hasUsableLlm()
+    const flushArgs = [MEM_PY, 'flush-inbox']
+    if (useLlm) flushArgs.push('--llm')
+
+    lastConsolidateAt = Date.now()
+    consolidateChild = execFile(
+      python,
+      flushArgs,
+      { cwd: MEM_DIR, timeout: config.autoConsolidateTimeoutMs ?? 300000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+      (flushError, flushStdout, flushStderr) => {
+        consolidateChild = null
+        const flushOut = (flushStdout || '').trim()
+        if (flushError) {
+          ctxLog(`每日整理的抽取步骤失败：${(flushStderr || flushError.message).trim()}`)
+          resolvePromise({ ok: false, ran: true, step: 'flush', error: flushError.message })
+          return
+        }
+        ctxLog(`每日整理·抽取完成：${flushOut || '(无输出)'}`)
+
+        // 抽取成功 → 顺带做生命周期维护（依赖消失 / TTL）
+        consolidateChild = execFile(
+          python,
+          [MEM_PY, 'maintain'],
+          { cwd: MEM_DIR, timeout: config.autoConsolidateTimeoutMs ?? 300000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+          (maintainError, maintainStdout) => {
+            consolidateChild = null
+            const maintainOut = (maintainStdout || '').trim()
+            if (maintainError) {
+              ctxLog(`每日整理的生命周期维护失败：${maintainError.message}`)
+              resolvePromise({ ok: false, ran: true, step: 'maintain', error: maintainError.message })
+              return
+            }
+            ctxLog(`每日整理·维护完成：${maintainOut || '(无需处理)'}`)
+            resolvePromise({ ok: true, ran: true, flush: flushOut, maintain: maintainOut })
+          },
+        )
+      },
+    )
+  })
+}
+
+/** 装上每日整理调度。dailyConsolidate:false 或缺省时不装。 */
+function startDailyConsolidate(ctx, config) {
+  if (config.dailyConsolidate !== true) return
+  const { hour, minute } = parseDailyTime(config.dailyConsolidateTime)
+
+  const schedule = () => {
+    const delay = msUntilNextDaily(hour, minute)
+    dailyTimer = setTimeout(() => {
+      dailyTimer = null
+      void runDailyConsolidate(config).then(() => {
+        // 跑完排下一次（明天同一时刻），而不是递归立即——防漂移也防连跑
+        schedule()
+      })
+    }, delay)
+    dailyTimer.unref?.()
+    ctx.logger?.info?.(
+      `dsh-tide-memory: 每日整理已排定（每天 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}，` +
+      `约 ${Math.round(delay / 60000)} 分钟后首次执行）`,
+    )
+  }
+  schedule()
+}
+
+// --------------------------------------------------------------------------- //
 // 环境检查：完全不依赖 Python，因为「没有 Python」正是它要报告的结论
 // --------------------------------------------------------------------------- //
 
@@ -636,6 +951,17 @@ function startPythonInstall(config) {
 
 /** 更新检查缓存有效期：6 小时（与页面「自动检查：每 6 小时」一致）。 */
 const UPDATE_TTL_MS = 6 * 60 * 60 * 1000;
+/** 每个更新源独立 12 秒超时：慢源只拖死自己，不拖垮整条解析链。 */
+const UPDATE_SOURCE_TIMEOUT_MS = 12000;
+/** 检查失败后的退避窗口：60 秒内不再打远程，免得连点按钮把匿名配额烧光。 */
+const UPDATE_FAIL_BACKOFF_MS = 60 * 1000;
+/** 源码包下载允许落地的域名（github.com 会 302 到 codeload / objects，得放行）。 */
+const UPDATE_ARCHIVE_HOSTS = new Set([
+  'github.com',
+  'www.github.com',
+  'codeload.github.com',
+  'objects.githubusercontent.com',
+]);
 /** Star 按钮只允许打开这些域名。 */
 const EXTERNAL_HOSTS = new Set(['github.com', 'www.github.com']);
 /** 覆盖升级时保留的东西：仓库元信息、依赖、用户数据、测试。 */
@@ -659,7 +985,39 @@ const updateState = {
   latestVersion: null,
   error: null,
   message: null,
+  /** 上次检查失败的时间戳：只用于退避，不参与 6 小时缓存判定（旧代码在这里写 checkedAt 才会烧配额）。 */
+  lastErrorAt: 0,
+  /**
+   * 成功解析时用的源标识：github-releases | github-tags | raw-package | jsdelivr-package。
+   * API 两源合并时写成 'github-releases+github-tags'。
+   */
+  source: null,
+  /** 每个源的尝试明细，给面板「查看诊断」用 */
+  diagnostics: [],
+  /** 各源各自报出的版本：{ source, version }[]，让面板一眼看出谁落后 */
+  candidates: [],
+  /** 匿名 API 配额快照：{ remaining, reset, retryAfter }；拿不到就是 null */
+  quota: null,
 };
+
+/**
+ * 每个源的 ETag 内存表：url -> { etag, tag, version }。
+ * 304 时直接复用上次解析结果，同时不消耗带宽；进程重启后自然失效。
+ */
+const updateEtagCache = new Map();
+
+/** 解析链：前两个是 API（有 60 次/小时匿名配额），后两个是静态文件（几乎不限流）。 */
+const UPDATE_SOURCES = [
+  { id: 'github-releases', kind: 'api', url: (repo) => 'https://api.github.com/repos/' + repo.slug + '/releases/latest' },
+  { id: 'github-tags', kind: 'api', url: (repo) => 'https://api.github.com/repos/' + repo.slug + '/tags?per_page=100' },
+  { id: 'raw-package', kind: 'file', url: (repo) => 'https://raw.githubusercontent.com/' + repo.slug + '/HEAD/package.json' },
+  { id: 'jsdelivr-package', kind: 'file', url: (repo) => 'https://cdn.jsdelivr.net/gh/' + repo.slug + '@HEAD/package.json' },
+];
+
+/** 按 id 取源声明；写死 id 而不是靠数组下标，改顺序也不会错。 */
+function updateSourceById(id) {
+  return UPDATE_SOURCES.find((source) => source.id === id) ?? null;
+}
 
 function readSelfManifest() {
   try {
@@ -710,22 +1068,311 @@ function compareVersions(left, right) {
   return a.pre < b.pre ? -1 : 1;
 }
 
-/** 问 GitHub 要仓库里最新的 semver tag。 */
-async function fetchLatestTag(repo) {
-  const response = await fetch('https://api.github.com/repos/' + repo.slug + '/tags?per_page=100', {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': name + '/update-check' },
-    signal: AbortSignal.timeout(12000),
-  });
-  if (!response.ok) throw new Error('GitHub API ' + response.status);
-  const payload = await response.json();
-  if (!Array.isArray(payload)) throw new Error('GitHub API：返回了非预期结构');
+/** 从 tag 数组里挑出最高的 semver tag；没有合法的就返回 null。 */
+function pickHighestTag(entries) {
   let best = null;
-  for (const entry of payload) {
+  for (const entry of entries) {
     const tag = typeof entry?.name === 'string' ? entry.name : '';
     if (parseVersion(tag) === null) continue;
     if (best === null || compareVersions(tag, best.tag) > 0) best = { tag, version: tag.replace(/^v/i, '') };
   }
   return best;
+}
+
+/** 从响应头里读出匿名 API 配额信息；一个都没有就算没拿到。 */
+function parseQuota(headers) {
+  if (!headers || typeof headers.get !== 'function') return null;
+  const remaining = headers.get('x-ratelimit-remaining');
+  const reset = headers.get('x-ratelimit-reset');
+  const retryAfter = headers.get('retry-after');
+  if (remaining === null && reset === null && retryAfter === null) return null;
+  const toNumber = (value) => {
+    if (value === null) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  };
+  return { remaining: toNumber(remaining), reset: toNumber(reset), retryAfter: toNumber(retryAfter) };
+}
+
+/** 是不是限流：429，或 403 且 x-ratelimit-remaining 已经被打空。 */
+function isRateLimited(status, quota) {
+  if (status === 429) return true;
+  return status === 403 && quota !== null && String(quota.remaining) === '0';
+}
+
+/**
+ * 试一个版本源。
+ *
+ * 单源独立 12s 超时 + redirect:'error'（防凭据/内容被跳转劫持）；
+ * 命中 If-None-Match 的 304 直接复用上次解析结果，不重复消耗带宽。
+ *
+ * @returns {{source:string,url:string,status:number|null,error:string|null,ms:number,tag?:string|null,version?:string|null,quota:object|null,rateLimited:boolean}}
+ */
+async function fetchUpdateSource(source, repo) {
+  const url = source.url(repo);
+  const startedAt = Date.now();
+  const attempt = { source: source.id, url, status: null, error: null, ms: 0, quota: null, rateLimited: false };
+  const cached = updateEtagCache.get(url);
+
+  const headers = {
+    'user-agent': name + '/update-check',
+    accept: source.kind === 'api' ? 'application/vnd.github+json' : 'application/json',
+  };
+  if (cached !== undefined && typeof cached.etag === 'string') headers['if-none-match'] = cached.etag;
+
+  let response;
+  try {
+    response = await fetch(url, {
+      headers,
+      redirect: 'error',
+      signal: AbortSignal.timeout(UPDATE_SOURCE_TIMEOUT_MS),
+    });
+  } catch (error) {
+    attempt.ms = Date.now() - startedAt;
+    const reason = error?.name === 'TimeoutError' || error?.name === 'AbortError'
+      ? 'timeout'
+      : String(error?.message ?? error);
+    attempt.error = reason;
+    return attempt;
+  }
+
+  attempt.status = response.status;
+  attempt.ms = Date.now() - startedAt;
+  attempt.quota = parseQuota(response.headers);
+
+  // 304：内容没变，直接复用上次解析出来的版本（缓存里没有就说明这条 304 没意义）
+  if (response.status === 304) {
+    if (cached !== undefined && typeof cached.tag === 'string') {
+      attempt.tag = cached.tag;
+      attempt.version = cached.version ?? cached.tag.replace(/^v/i, '');
+      return attempt;
+    }
+    attempt.error = 'not-modified-without-cache';
+    return attempt;
+  }
+
+  if (isRateLimited(response.status, attempt.quota)) {
+    attempt.error = 'rate-limited';
+    attempt.rateLimited = true;
+    return attempt;
+  }
+  if (!response.ok) {
+    attempt.error = 'HTTP ' + response.status;
+    return attempt;
+  }
+
+  try {
+    const payload = await response.json();
+    const best = source.kind === 'api' && source.id === 'github-releases'
+      ? (() => {
+        const tag = typeof payload?.tag_name === 'string' ? payload.tag_name.trim() : '';
+        if (tag === '' || parseVersion(tag) === null) return null;
+        return { tag, version: tag.replace(/^v/i, '') };
+      })()
+      : source.id === 'github-tags'
+        ? (Array.isArray(payload) ? pickHighestTag(payload) : null)
+        : (typeof payload?.version === 'string' && parseVersion(payload.version) !== null
+          ? { tag: 'v' + payload.version.replace(/^v/i, ''), version: payload.version.replace(/^v/i, '') }
+          : null);
+    if (best === null) {
+      attempt.error = 'no-semver-version';
+      return attempt;
+    }
+    attempt.tag = best.tag;
+    attempt.version = best.version;
+    const etag = response.headers.get('etag');
+    if (typeof etag === 'string' && etag !== '') rememberEtag(url, { etag, tag: best.tag, version: best.version });
+    return attempt;
+  } catch (error) {
+    attempt.error = 'bad-json: ' + String(error?.message ?? error);
+    return attempt;
+  }
+}
+
+/** 把每个源的失败拼成一句人话（面板直接显示）。 */
+function describeUpdateFailure(diagnostics, quota) {
+  const parts = [];
+  for (const item of diagnostics) {
+    const reason = item.error !== null ? item.error : item.status !== null ? 'HTTP ' + item.status : 'unknown';
+    parts.push(item.source + ': ' + reason);
+  }
+  let text = '全部更新源均失败（' + parts.join('；') + '）';
+  if (quota !== null && quota !== undefined && String(quota.remaining) === '0') {
+    text += '。GitHub 匿名配额已耗尽，已自动改走静态源，稍后会恢复';
+  }
+  return text.slice(0, 320);
+}
+
+/** ETag 表加个上限：源只有 4 个，正常不会到 32；用户换仓库时顺手丢掉最旧的。 */
+const UPDATE_ETAG_LIMIT = 32;
+function rememberEtag(url, entry) {
+  if (updateEtagCache.size >= UPDATE_ETAG_LIMIT) {
+    const oldest = updateEtagCache.keys().next();
+    if (oldest.done !== true) updateEtagCache.delete(oldest.value);
+  }
+  updateEtagCache.set(url, entry);
+}
+
+/** 单源执行 + 诊断登记 + 配额汇总：多源链里每个源都走这一条路，保证口径一致。 */
+async function probeSource(source, repo, diagnostics, ctx) {
+  const attempt = await fetchUpdateSource(source, repo);
+  const record = {
+    source: attempt.source,
+    url: attempt.url,
+    status: attempt.status,
+    error: attempt.error,
+    ms: attempt.ms,
+    ...(attempt.tag !== undefined && attempt.tag !== null ? { tag: attempt.tag } : {}),
+  };
+  diagnostics.push(record);
+  if (attempt.quota !== null) {
+    ctx.quota = attempt.quota;
+    if (String(attempt.quota.remaining) === '0') ctx.quotaExhausted = true;
+  }
+  if (attempt.rateLimited) ctx.quotaExhausted = true;
+  return attempt;
+}
+
+/**
+ * API 两源合并：releases 与 tags 各报一个版本，取**较高者**，而不是「先到先得」。
+ *
+ * 为什么必须合并：仓库可能出现「打了 tag v2.1.0、但 release 还停在 v2.0.0」的状态。
+ * 若 releases 一命中就返回，latestVersion 会停在 v2.0.0；等仓库发了 v2.2.0 却没建 release，
+ * 面板就会显示「已是最新」——用户永远收不到升级提示，这正是「更新检查失败」的另一副面孔。
+ *
+ * 省配额策略：只有 releases 版本 **不高于** 磁盘版本时，才追加去查 tags。
+ * releases 已经严格高于磁盘版本时，它必然是「有新版本」，无需再花一次配额。
+ *
+ * @returns {{result:{tag,version,source}|null, candidates:Array, tagsChecked:boolean, tagsSkippedReason:string|null}}
+ */
+async function resolveApiLatest(repo, disk, diagnostics, ctx) {
+  const candidates = [];
+  const releases = updateSourceById('github-releases');
+  const tags = updateSourceById('github-tags');
+  let fromReleases = null;
+
+  // ① releases/latest
+  if (releases !== null && !ctx.quotaExhausted) {
+    const attempt = await probeSource(releases, repo, diagnostics, ctx);
+    if (attempt.tag !== undefined && attempt.tag !== null) {
+      fromReleases = { tag: attempt.tag, version: attempt.version, source: releases.id };
+      candidates.push({ source: attempt.source, version: attempt.version });
+    }
+  } else if (releases !== null) {
+    diagnostics.push({ source: releases.id, url: releases.url(repo), status: null, error: 'skipped: quota exhausted', ms: 0 });
+  }
+
+  // ② 决定要不要再查 tags
+  //    只在「releases 没给出严格高于磁盘的版本」时查 —— 那才是它可能落后于 tags 的情形
+  const releasesIsNewer = fromReleases !== null && compareVersions(fromReleases.version, disk) > 0;
+  let tagsSkippedReason = null;
+  if (tags === null) tagsSkippedReason = 'no-source';
+  else if (releasesIsNewer) tagsSkippedReason = 'releases-newer';
+  else if (ctx.quotaExhausted) tagsSkippedReason = 'quota-exhausted';
+
+  if (tagsSkippedReason === null) {
+    const attempt = await probeSource(tags, repo, diagnostics, ctx);
+    if (attempt.tag !== undefined && attempt.tag !== null) {
+      candidates.push({ source: attempt.source, version: attempt.version });
+      const fromTags = { tag: attempt.tag, version: attempt.version, source: tags.id };
+      if (fromReleases === null) {
+        // releases 没拿到：tags 单源胜出
+        return { result: fromTags, candidates, tagsChecked: true, tagsSkippedReason: null };
+      }
+      // 两源都有：取较高者。相同时保留较高者那条 tag，但 source 标成合并，表达「两源都确认过」
+      const cmp = compareVersions(fromTags.version, fromReleases.version);
+      if (cmp > 0) {
+        return {
+          result: { tag: fromTags.tag, version: fromTags.version, source: releases.id + '+' + tags.id },
+          candidates,
+          tagsChecked: true,
+          tagsSkippedReason: null,
+        };
+      }
+      return {
+        result: {
+          tag: fromReleases.tag,
+          version: fromReleases.version,
+          source: releases.id + '+' + tags.id,
+        },
+        candidates,
+        tagsChecked: true,
+        tagsSkippedReason: null,
+      };
+    }
+    // tags 查了但没结果：退回 releases（若有）
+    return { result: fromReleases, candidates, tagsChecked: true, tagsSkippedReason: null };
+  }
+
+  // 跳过了 tags：补一条诊断，面板能看清「为什么只有一个源报数」。
+  // 配额耗尽与 releases-newer 都要记，只是措辞不同（前者是被限流，后者是主动省配额）。
+  if (tags !== null) {
+    diagnostics.push({
+      source: tags.id,
+      url: tags.url(repo),
+      status: null,
+      error: tagsSkippedReason === 'quota-exhausted' ? 'skipped: quota exhausted' : 'skipped: ' + tagsSkippedReason,
+      ms: 0,
+    });
+  }
+  return { result: fromReleases, candidates, tagsChecked: false, tagsSkippedReason };
+}
+
+/**
+ * 问出「仓库最新版本」：API 两源合并优先，静态文件源作为 API 全挂时的兜底。
+ *
+ * 全部源都失败才算失败（source=null）。
+ */
+async function fetchLatestTag(repo) {
+  const diagnostics = [];
+  const ctx = { quota: null, quotaExhausted: false };
+  const disk = diskVersion();
+
+  // 第一梯队：API 两源合并（取较高者，避免 releases 落后导致漏报升级）
+  const api = await resolveApiLatest(repo, disk, diagnostics, ctx);
+  if (api.result !== null) {
+    return {
+      tag: api.result.tag,
+      version: api.result.version,
+      source: api.result.source,
+      diagnostics,
+      candidates: api.candidates,
+      quota: ctx.quota,
+      tagsChecked: api.tagsChecked,
+      tagsSkippedReason: api.tagsSkippedReason,
+    };
+  }
+
+  // 第二梯队：静态文件源兜底（几乎不受匿名配额影响）
+  const candidates = [...api.candidates];
+  for (const source of UPDATE_SOURCES) {
+    if (source.kind !== 'file') continue;
+    const attempt = await probeSource(source, repo, diagnostics, ctx);
+    if (attempt.tag !== undefined && attempt.tag !== null) {
+      candidates.push({ source: attempt.source, version: attempt.version });
+      return {
+        tag: attempt.tag,
+        version: attempt.version,
+        source: attempt.source,
+        diagnostics,
+        candidates,
+        quota: ctx.quota,
+        tagsChecked: api.tagsChecked,
+        tagsSkippedReason: api.tagsSkippedReason,
+      };
+    }
+  }
+
+  return {
+    tag: null,
+    version: null,
+    source: null,
+    diagnostics,
+    candidates,
+    quota: ctx.quota,
+    tagsChecked: api.tagsChecked,
+    tagsSkippedReason: api.tagsSkippedReason,
+  };
 }
 
 /** 组装前端要的状态。 */
@@ -741,6 +1388,8 @@ function updateStatus(repo) {
     latestVersion: latest,
     latestTag: updateState.latestTag,
     checkedAt: updateState.checkedAt > 0 ? new Date(updateState.checkedAt).toISOString() : null,
+    // 失败时刻只用于退避判定，和 checkedAt 分开（旧的烧配额 bug 就是把失败写进了 checkedAt）
+    lastErrorAt: updateState.lastErrorAt > 0 ? new Date(updateState.lastErrorAt).toISOString() : null,
     ttlMs: UPDATE_TTL_MS,
     repo: repo?.slug ?? null,
     htmlUrl: repo?.htmlUrl ?? null,
@@ -749,6 +1398,48 @@ function updateStatus(repo) {
     restartRequired: compareVersions(disk, RUNTIME_VERSION) > 0,
     error: updateState.error,
     message: updateState.message,
+    // ── 以下为本次新增（只增不减，旧前端忽略即可）
+    source: updateState.source,
+    diagnostics: updateState.diagnostics,
+    quota: updateState.quota,
+    // 各源分别报了什么版本：面板据此一眼看出「releases 落后于 tags」
+    candidates: updateState.candidates,
+  };
+}
+
+/**
+ * 诊断快照：给面板「查看诊断」用。
+ * 只回放本进程内存里的最后一次结果，不主动打远程 —— 看一眼诊断不该消耗配额。
+ */
+function updateDiagnostics() {
+  const repo = resolveUpdateRepo();
+  return {
+    ok: true,
+    packageName: name,
+    runtimeVersion: RUNTIME_VERSION,
+    diskVersion: diskVersion(),
+    repo: repo?.slug ?? null,
+    htmlUrl: repo?.htmlUrl ?? null,
+    canSelfUpdate: repo !== null,
+    latestTag: updateState.latestTag,
+    latestVersion: updateState.latestVersion,
+    source: updateState.source,
+    checkedAt: updateState.checkedAt > 0 ? new Date(updateState.checkedAt).toISOString() : null,
+    lastErrorAt: updateState.lastErrorAt > 0 ? new Date(updateState.lastErrorAt).toISOString() : null,
+    error: updateState.error,
+    message: updateState.message,
+    quota: updateState.quota,
+    diagnostics: updateState.diagnostics,
+    candidates: updateState.candidates,
+    sources: UPDATE_SOURCES.map((source) => ({
+      id: source.id,
+      kind: source.kind,
+      url: repo === null ? null : source.url(repo),
+    })),
+    timeoutMs: UPDATE_SOURCE_TIMEOUT_MS,
+    ttlMs: UPDATE_TTL_MS,
+    failBackoffMs: UPDATE_FAIL_BACKOFF_MS,
+    etagEntries: updateEtagCache.size,
   };
 }
 
@@ -768,18 +1459,45 @@ async function checkUpdate(force) {
     && Date.now() - updateState.checkedAt < UPDATE_TTL_MS;
   if (fresh && force !== true) return updateStatus(repo);
 
+  // 失败退避：60 秒内连点不再打远程。
+  // 权威来源是 lastErrorAt —— 成功一次就会把 checkedAt 推到现在，那时退避自然失效。
+  const backingOff = updateState.lastErrorAt > 0
+    && updateState.repoSlug === repo.slug
+    && Date.now() - updateState.lastErrorAt < UPDATE_FAIL_BACKOFF_MS
+    && updateState.error !== null;
+  if (backingOff) {
+    return {
+      ...updateStatus(repo),
+      message: (updateState.message ?? '上次检查失败，稍后再试。') + '（60 秒内不重复请求）',
+    };
+  }
+
   try {
-    const latest = await fetchLatestTag(repo);
-    updateState.checkedAt = Date.now();
+    const result = await fetchLatestTag(repo);
     updateState.repoSlug = repo.slug;
-    updateState.latestTag = latest?.tag ?? null;
-    updateState.latestVersion = latest?.version ?? null;
-    updateState.error = null;
-    updateState.message = latest === null ? '仓库里还没有可用的版本 tag。' : null;
+    updateState.diagnostics = result.diagnostics;
+    updateState.quota = result.quota;
+    updateState.source = result.source;
+    updateState.candidates = result.candidates ?? [];
+    if (result.source !== null) {
+      // 只有成功才写 checkedAt：失败也写会让「6 小时缓存」变成「失败缓存」，连点就烧配额
+      updateState.checkedAt = Date.now();
+      updateState.lastErrorAt = 0;
+      updateState.latestTag = result.tag;
+      updateState.latestVersion = result.version;
+      updateState.error = null;
+      updateState.message = null;
+    } else {
+      // 全部源失败：不碰 checkedAt，只记 lastErrorAt 供退避
+      updateState.lastErrorAt = Date.now();
+      updateState.error = describeUpdateFailure(result.diagnostics, result.quota);
+      updateState.message = null;
+    }
   } catch (error) {
-    updateState.checkedAt = Date.now();
+    // 兜底：解析链自己的意外异常同样只记录失败时刻，绝不污染 checkedAt
     updateState.repoSlug = repo.slug;
-    updateState.error = error instanceof Error ? error.message : String(error);
+    updateState.lastErrorAt = Date.now();
+    updateState.error = String(error?.message ?? error);
     updateState.message = null;
   }
   return updateStatus(repo);
@@ -835,27 +1553,88 @@ function applyViaGit(directory, tag) {
   return { ok: true, method: 'git' };
 }
 
+/** 从指定 URL 拉源码包；失败返回带明细的结果，不抛。 */
+async function downloadArchive(url, archivePath) {
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(url, {
+      headers: { 'user-agent': name + '/update' },
+      signal: AbortSignal.timeout(60000),
+      // 这个源要跟随 302（github.com → codeload / objects），但只允许落到白名单域名，
+      // 免得凭据或内容被任意跳转劫持。
+      redirect: 'follow',
+    });
+    if (!response.ok) return { ok: false, status: response.status, ms: Date.now() - startedAt, error: 'HTTP ' + response.status };
+    const finalHost = (() => {
+      try {
+        return new URL(response.url).hostname.toLowerCase();
+      } catch {
+        return '';
+      }
+    })();
+    if (finalHost !== '' && !UPDATE_ARCHIVE_HOSTS.has(finalHost)) {
+      return { ok: false, status: response.status, ms: Date.now() - startedAt, error: 'unexpected-host: ' + finalHost };
+    }
+    writeFileSync(archivePath, Buffer.from(await response.arrayBuffer()));
+    return { ok: true, status: response.status, ms: Date.now() - startedAt, finalUrl: response.url };
+  } catch (error) {
+    return {
+      ok: false,
+      status: null,
+      ms: Date.now() - startedAt,
+      error: error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : String(error?.message ?? error),
+    };
+  }
+}
+
 /** 没有 .git 时：下载 tag 源码包覆盖插件文件（保留 .git / node_modules / var / tests）。 */
 async function applyViaTarball(directory, repo, tag) {
   const staging = mkdtempSync(join(tmpdir(), 'dsh-tide-memory-update-'));
   try {
-    const archivePath = join(staging, 'source.tar.gz');
-    const url = 'https://codeload.github.com/' + repo.slug + '/tar.gz/refs/tags/' + encodeURIComponent(tag);
-    const response = await fetch(url, {
-      headers: { 'user-agent': name + '/update' },
-      signal: AbortSignal.timeout(60000),
-    });
-    if (!response.ok) return { ok: false, error: 'download-failed-' + response.status };
-    writeFileSync(archivePath, Buffer.from(await response.arrayBuffer()));
+    // 主源 codeload；失败再退 github.com 的 archive 地址（契约 §4「升级源回退」）
+    const candidates = [
+      { source: 'codeload', url: 'https://codeload.github.com/' + repo.slug + '/tar.gz/refs/tags/' + encodeURIComponent(tag) },
+      { source: 'github-archive', url: 'https://github.com/' + repo.slug + '/archive/refs/tags/' + encodeURIComponent(tag) + '.tar.gz' },
+    ];
+    const attempts = [];
+    let archivePath = null;
+    let usedSource = null;
+    for (const candidate of candidates) {
+      const target = join(staging, 'source-' + candidate.source + '.tar.gz');
+      const attempt = await downloadArchive(candidate.url, target);
+      attempts.push({ source: candidate.source, url: candidate.url, status: attempt.status, error: attempt.error ?? null, ms: attempt.ms });
+      if (attempt.ok === true) {
+        archivePath = target;
+        usedSource = candidate.source;
+        break;
+      }
+    }
+    if (archivePath === null) {
+      // 两个源都不行才报错，错误里带上每步明细，面板能直接看出卡在哪
+      return {
+        ok: false,
+        error: 'download-failed',
+        detail: attempts.map((item) => item.source + ': ' + (item.error ?? 'unknown')).join('；').slice(0, 400),
+        attempts,
+      };
+    }
 
     const extracted = runTool('tar', ['-xzf', archivePath, '-C', staging], staging);
-    if (!extracted.ok) return { ok: false, error: 'extract-failed', detail: extracted.stderr.trim().slice(0, 400) };
+    if (!extracted.ok) {
+      return {
+        ok: false,
+        error: 'extract-failed',
+        detail: extracted.stderr.trim().slice(0, 400),
+        attempts,
+        downloadSource: usedSource,
+      };
+    }
 
     const root = readdirSync(staging, { withFileTypes: true }).find((entry) => entry.isDirectory());
-    if (root === undefined) return { ok: false, error: 'empty-archive' };
+    if (root === undefined) return { ok: false, error: 'empty-archive', attempts, downloadSource: usedSource };
 
     const files = copyTree(join(staging, root.name), directory, UPDATE_SKIP);
-    return { ok: true, method: 'tarball', files };
+    return { ok: true, method: 'tarball', files, downloadSource: usedSource, attempts };
   } finally {
     try {
       rmSync(staging, { recursive: true, force: true });
@@ -1172,6 +1951,13 @@ export function apply(ctx) {
                 res.end(JSON.stringify(reply))
                 return
               }
+              if (payload && payload.op === 'update_diag') {
+                // 只回放内存里的诊断快照，不触网 —— 看诊断不该消耗匿名配额
+                const reply = updateDiagnostics()
+                res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify(reply))
+                return
+              }
               if (payload && payload.op === 'open_repo') {
                 const repo = resolveUpdateRepo()
                 const reply = repo === null
@@ -1204,4 +1990,18 @@ export function apply(ctx) {
     injected.clear()
     recorded.clear()
   }, 'dsh-tide-memory: clear caches')
+
+  // ── 自动巩固调度 ────────────────────────────────────────────────────── //
+  //
+  // 为什么必须有：采集（session/event → inbox.jsonl）和注入（读快照）都是
+  // 插件自己完成的，但**巩固**（inbox → 抽取 → 记忆库 → 快照）原来完全依赖
+  // 外部触发（手动命令或用户自建的定时任务）。结果是新机器装完插件后：
+  // 话被采集了、检索也在跑，但快照永远是空的 → 一条记忆都注入不出来。
+  //
+  // 这里把它变成**零配置**：插件加载后自己在合适的时机跑巩固。
+  //   ① 启动后延迟一小会儿先跑一次（等宿主把数据目录写完）
+  //   ② 之后按固定间隔再检查，只有 inbox 攒够了才真的跑（避免空转）
+  //   ③ 同一时刻只允许一个巩固进程
+  // 手动命令与外部定时任务仍然可用，两者不冲突（Python 侧有指纹去重）。
+  startAutoConsolidate(ctx, config)
 }

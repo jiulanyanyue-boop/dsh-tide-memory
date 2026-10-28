@@ -107,8 +107,47 @@ class LlmConfig:
         )
 
 
+def _stored_api_key() -> str:
+    """从加密存储里取密钥。取不到（或解不开）一律当作「没有密钥」。
+
+    绝不因此抛异常：LLM 功能降级成规则模式即可，不能把整个插件拖死。
+    """
+    try:
+        from secret_store import load_secret
+
+        key, _scheme = load_secret()
+        return key
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _migrate_plaintext_key(plaintext: str, target: Path, data: dict) -> None:
+    """老装升级：llm.json 里还带明文 api_key → 加密存起来，再把明文抹掉。
+
+    迁移失败就不动原文件（宁可继续用明文，也不能把用户密钥弄丢），
+    但会把错误留给上层日志。
+    """
+    try:
+        from secret_store import migrate_plaintext
+
+        migrate_plaintext(plaintext)
+    except Exception:  # noqa: BLE001
+        return
+    scrubbed = {k: v for k, v in data.items() if k != "api_key"}
+    try:
+        target.write_text(
+            json.dumps(scrubbed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 def load_llm_config(path: str | Path | None = None) -> LlmConfig | None:
-    """环境变量优先，其次 memory-consolidation/llm.json。都没有返回 None。"""
+    """环境变量优先，其次 llm.json（密钥从加密存储取，不再是明文文件）。
+
+    返回的 llm.json 里**不再有 api_key**；密钥单独走 secret_store。
+    老文件若仍带明文 api_key，这里会顺手迁移并抹掉。
+    """
     cfg = LlmConfig.from_env()
     if cfg is not None:
         return cfg
@@ -117,31 +156,50 @@ def load_llm_config(path: str | Path | None = None) -> LlmConfig | None:
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
+        data = {}
     if not isinstance(data, dict):
-        return None
+        data = {}
     base = str(data.get("base_url", "")).strip()
     model = str(data.get("model", "")).strip()
+
+    api_key = _stored_api_key()
+    plaintext = str(data.get("api_key", "") or "").strip()
+    if plaintext:
+        # 有明文就先迁走；迁移成功后文件里的字段会被抹掉
+        _migrate_plaintext_key(plaintext, target, data)
+        if not api_key:
+            api_key = plaintext
+
     if not base or not model:
         return None
     return LlmConfig(
         base_url=base.rstrip("/"),
         model=model,
-        api_key=str(data.get("api_key", "")),
+        api_key=api_key,
         timeout=float(data.get("timeout", 90)),
         retries=int(data.get("retries", 1)),
     )
 
 
 def save_llm_config(config: LlmConfig, path: str | Path | None = None) -> Path:
+    """写配置。**api_key 永不落进这个文件**——它走 secret_store 加密存储。
+
+    先存密钥再写配置：万一密钥保存失败，配置文件不会被改成半成品。
+    """
     target = Path(path) if path else CONFIG_PATH
+    plaintext_key = (config.api_key or "").strip()
+    if plaintext_key:
+        from secret_store import save_secret
+
+        save_secret(plaintext_key)
+
     payload = {
         "base_url": config.base_url,
         "model": config.model,
-        "api_key": config.api_key,
         "timeout": config.timeout,
         "retries": config.retries,
     }
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     try:
         if os.name == "nt":

@@ -1,7 +1,7 @@
 {
   "name": "dsh-tide-memory",
-  "version": "2.1.0",
-  "description": "潮汐记忆：给 DeepSeek Harness 的跨会话长期记忆。三问闸门过滤垃圾、记忆带归属与生命周期、状态会自动更新、项目删了记忆自动失效。SQLite + 双时间模型，零第三方依赖。",
+  "version": "2.2.0",
+  "description": "潮汐记忆：给 DeepSeek Harness 的跨会话长期记忆。五问闸门只留结论性记忆、按工作区完全隔离、LLM 密钥 DPAPI 加密存储、引擎状态可观测。SQLite + 双时间模型，零第三方依赖。",
   "keywords": [
     "dsh",
     "dsh-bundle",

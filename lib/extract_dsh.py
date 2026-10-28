@@ -143,26 +143,101 @@ class _Rule:
 
 
 RULES: list[_Rule] = [
-    # 显式指令优先级最高
+    # ── 显式指令：优先级最高 ─────────────────────────────────────────
     _Rule("preference", "must_remember", re.compile(r"记住[:：,，\s]*(.{2,60})")),
+
+    # ── 第一人称偏好 / 事实 ─────────────────────────────────────────
     _Rule("preference", "prefers", re.compile(r"我(?:比较|更|很|最)?(?:喜欢|偏好|习惯|爱用|爱)(.{2,40})")),
     _Rule("preference", "wants", re.compile(r"我(?:希望|想要|要求|需要)(.{2,40})")),
     _Rule("preference", "requires", re.compile(r"(?:以后|今后|之后)(?:都|一律)?(.{2,40})")),
     _Rule("preference", "requires", re.compile(r"(?:请|务必|一定要)(?:始终|一直)?(?:用|使用|保持|按照)(.{2,40})")),
+    # 否定：原来只认「不要/别/禁止」，漏掉了最常见的「不用」
     _Rule("preference", "avoids", re.compile(r"(?:不要|别|禁止)(?:再|总是)?(?:用|使用|采用)(.{2,30})")),
+    _Rule("preference", "avoids", re.compile(r"我(?:现在|以后)?不(?:再)?(?:用|要|喜欢)(.{2,30})")),
     _Rule("fact", "uses", re.compile(r"我(?:现在|目前)?(?:用|使用)([A-Za-z0-9_\-.+ ]{2,30})")),
     _Rule("fact", "located_in", re.compile(r"我(?:现在|目前)?(?:在|住在|搬到)([\u4e00-\u9fffA-Za-z0-9 ]{2,16})(?:工作|生活|住)?")),
+
+    # ── 陈述式结论（本轮新增）──────────────────────────────────────
+    #
+    # 为什么必须加：上面 9 条几乎全是**第一人称**句式，而用户真实消息里
+    # 大量是陈述句（「这个项目用 SQLite」「测试必须先跑 lint」）。
+    # 实测旧规则对 12 条典型结论只识出 3 条（25%），不配 LLM 时基本等于没有记忆。
+    #
+    # 加规则的原则：**只认高置信度、低歧义的结论句式**，宁可少抽也不要误抽。
+    # 抽出来的候选还要过「五问闸门」，过程叙述/碎片/时间锚会被拦掉。
+
+    # 「这个项目 / 该仓库 / 本插件 …… 用/采用/基于 X」
+    _Rule("fact", "uses", re.compile(
+        r"(?:这个|该|本|此)?(?:项目|仓库|插件|系统|工具|工程|模块|脚本)"
+        r"(?:坚持|统一|一律)?(?:用|使用|采用|基于|依赖)"
+        r"([A-Za-z0-9_\-./+ ]{2,30})")),
+    # 「X 是 Y」——排除疑问与时间词，只取明确的判断句
+    _Rule("fact", "is", re.compile(
+        r"(?:这个|该|本|此)?(?:项目|仓库|插件|系统)(?:的)?"
+        r"[^，。；,;？?]{1,12}?是([^，。；,;？?]{2,24})")),
+    # 「必须 / 需要 / 应当 X」——规则类结论
+    # 负向断言排除纯态度词：「这个项目必须小心」抽出的「小心」没有任何信息量
+    _Rule("reflection", "must", re.compile(
+        r"(?:必须|需要|应当|务必|一定要)"
+        r"(?!(?:小心|注意|当心|留意|谨慎|认真|仔细|严谨|用心))"
+        r"([^，。；,;？?]{2,30})")),
+    # 「零 X / 不引入 X / 无 X」——约束类结论
+    _Rule("reflection", "constraint", re.compile(
+        r"(零第三方依赖|零依赖|不引入[^，。；,;？?]{0,16}|无外部依赖|不依赖[^，。；,;？?]{0,16})")),
+    # 「因为 X，所以/才 Y」——因果结论（取原因侧）
+    _Rule("episode", "root_cause", re.compile(
+        r"(?:因为|由于|原因是|根因是)([^，。；,;？?]{2,30})")),
+    # 「X 已修复 / 已解决 / 已完成」——状态类结论
+    _Rule("fact", "fixed_status", re.compile(
+        r"([^，。；,;？?]{2,18}?)(?:已(?:经)?(?:修复|解决|完成|上线|发布))")),
 ]
 
 SENTENCE_SPLIT = re.compile(r"[。！？!?\n]")
 TRAILING = "的了啊呢吧呀哦。"
 LEADING = re.compile(r"^(?:用|使用|采用)\s*")
 
+#: object 里该剥掉的尾部动词短语——「neovim 写代码」要的是 neovim，不是整句话
+TAIL_VERBS = (
+    "写代码", "写脚本", "写程序", "做开发", "做后端", "做前端",
+    "编码", "开发", "工作", "写", "做",
+)
+
+#: 「回复用简体中文」这种：真正的值在「用」后面
+REPLY_PREFIX = re.compile(r"^[^，。；,;]{0,8}?用([A-Za-z0-9\u4e00-\u9fff_\-+.]{2,24})$")
+
 
 def _clean(text: str) -> str:
+    """归一化抽出来的值。
+
+    早期版本直接把正则捕获组原样返回，于是出现
+    「neovim 写代码」「回复用简体中文」这种**带着上下文尾巴**的值。
+    它们看着还行，但会让同一属性在不同句子里落到不同的 object，
+    巩固层就判不出冲突（「换用 emacs」永远覆盖不掉「neovim 写代码」）。
+    """
     text = text.strip(" \t，,。.!！?？;；:：\"'“”‘’（）()")
     text = LEADING.sub("", text)
-    return text.strip().rstrip(TRAILING).strip()
+    text = text.strip().rstrip(TRAILING).strip()
+
+    # ① 中英混排：取英文标识符部分（「neovim 写代码」→「neovim」）
+    #    纯英文（如「IntelliJ IDEA」）不受影响，因为尾部没有中文
+    mixed = re.match(r"^([A-Za-z0-9_\-./+]+(?: [A-Za-z0-9_\-./+]+)*)\s*[\u4e00-\u9fff]", text)
+    if mixed:
+        candidate = mixed.group(1).strip()
+        if len(candidate) >= 2:
+            text = candidate
+
+    # ② 剥掉纯中文的尾部动词短语
+    for verb in TAIL_VERBS:
+        if text.endswith(verb) and len(text) > len(verb) + 1:
+            text = text[: -len(verb)].strip()
+            break
+
+    # ③ 「回复用简体中文」→「简体中文」
+    reply = REPLY_PREFIX.match(text)
+    if reply:
+        text = reply.group(1).strip()
+
+    return text.strip()
 
 
 def extract_from_text(text: str) -> list[tuple[str, str, str]]:
