@@ -1019,8 +1019,10 @@ window.__ModuleLoader__.load({
           }
           setBusy(true)
           var payload = modal.id
-            ? { op: 'edit_text', id: modal.id, text: text }
+            ? { op: 'edit_text', id: modal.id, text: text, allow_cross_workspace: true }
             : { op: 'add_text', text: text }
+          /* 编辑也要过跨工作区守卫：带 cwd（与 delete 同理，v2.2.0 修复） */
+          if (modal.id && cwdRef.current) payload.cwd = cwdRef.current
           call(payload)
             .then(function (res) {
               if (!res.ok) {
@@ -1044,10 +1046,17 @@ window.__ModuleLoader__.load({
             })
         }
 
-        var removeRow = function (item) {
+        /* 删除/编辑走后端的跨工作区守卫（fail-closed）：请求必须带 cwd，
+         * 否则后端只放行 global——这是「面板删不掉记忆」的根因（v2.2.0 修复）。
+         * cwd 取面板当前认到的值；拿不到就明说，而不是让后端静默拒绝。 */
+        var deleteRow = function (item) {
           if (!window.confirm('确定删除这条记忆吗？\n' + item.content)) return
           setBusy(true)
-          call({ op: 'delete', id: item.id })
+          /* allow_cross_workspace：面板已有 window.confirm 二次确认，
+           * 拿不到 cwd 的场景（宿主未就绪）也不该把用户锁死——显式担责放行 */
+          var payload = { op: 'delete', id: item.id, allow_cross_workspace: true }
+          if (cwdRef.current) payload.cwd = cwdRef.current
+          call(payload)
             .then(function (res) {
               setMsg(res.ok ? '已删除' : '删除失败：' + (res.error || ''))
               refresh()
@@ -1680,7 +1689,7 @@ window.__ModuleLoader__.load({
             ),
             h('div', { className: 'dm-actions' },
               h('button', { className: 'dm-btn tiny', onClick: function () { openEdit(item) } }, '编辑'),
-              h('button', { className: 'dm-btn tiny', onClick: function () { removeRow(item) } }, '删除'),
+              h('button', { className: 'dm-btn tiny', onClick: function () { deleteRow(item) } }, '删除'),
             ),
           )
         }

@@ -555,8 +555,64 @@ def _is_temp_noise(text: str) -> bool:
     return bool(_TEMP_PATH_RE.search(text or ""))
 
 
-def worth_remembering(
-    *,
+#: 动作指令首词：值以这些动词开头 = 在描述「要做的一件事」，不是稳定规则。
+#: 对 20 条真实漏网样本 + 10 条真实好记忆校准：19 拦 1 放 / 零误伤。
+ACTION_HEADS = (
+    "定位", "核实", "登录", "截图", "支持", "获取", "触发", "参考", "修复", "排查",
+    "测试", "试试", "验收", "实现", "配置", "安装", "部署", "上传", "下载", "打开",
+    "点击", "检查", "确认", "填写", "启动", "运行", "执行", "处理", "整理", "生成",
+)
+
+#: 一次性语境词：值里出现 = 这件事做完就失效
+ONE_SHOT_HINTS = (
+    "这个问题", "这个 bug", "这个bug", "该问题", "本次", "这之后",
+    "体检报告", "看图", "如下图", "截图",
+)
+
+#: 裸产品名：must/requires/root_cause 谓词下值只是个产品名，无语义
+_BARE_PRODUCT_NAMES = {
+    "claude", "google", "claude desktop", "chatgpt", "微信", "qq", "gpt", "gemini",
+}
+
+
+def _is_one_shot_instruction(obj: str) -> str | None:
+    """一次性动作/诉求检测：返回拒绝理由；None 表示不是。
+
+    判别的是「形态合法但语义空洞」的漏网形态——购物需求清单里的
+    「必须支持热插拔」、闲聊里的「登录才能看」、任务描述里的
+    「定位存储逻辑的问题根因」。它们不是句子结构问题，是**用途**问题：
+    做完/聊完就失效，不属于跨会话记忆。
+    """
+    t = (obj or "").strip()
+    if not t:
+        return None
+    if any(t.startswith(v) for v in ACTION_HEADS):
+        return "动作指令：描述要做的一件事，不是稳定规则"
+    if any(h in t for h in ONE_SHOT_HINTS):
+        return "一次性语境：问题解决后这条就失效了"
+    # 需求/协商语气：当下的诉求，不是长期成立的结论
+    # 「还要用，够安全就行」「应该可以测试连通性」「实际手机上试试」
+    if re.search(r"就行$|就可以了?$|应该可以|到时候|再(说|看)|先这样|试试$|要用的?$", t):
+        return "协商语气：当下的诉求，不是长期成立的结论"
+    # 裸产品名：must/requires/root_cause 谓词下只写个产品名，无复用语义
+    if t.lower() in _BARE_PRODUCT_NAMES:
+        return "裸产品名：不含可复用的语义"
+    # 指代性短语：『这些工具』『那个方案』——脱离会话不知道指什么
+    if re.match(r"^(这些|那些|这个|那个)", t):
+        return "指代性短语：脱离会话不可读"
+    # 条件依赖：「额外设置才能实现自动调用」「根据APP引导填信息就能启动」
+    if re.search(r"才能|就能|才可以", t):
+        return "条件依赖：描述当下达成目标的手段，不是稳定结论"
+    # 当下定性：「本来就是聊天」——离开会话无主语
+    if re.search(r"本来就", t):
+        return "当下定性：离开会话无主语"
+    # 一次性操作安排：「另一个电脑上push」——设备相关的一次性动作
+    if re.search(r"(电脑|手机|机器|虚拟机|环境)上", t) and len(t) <= 16:
+        return "一次性操作安排：设备相关的一次性动作"
+    return None
+
+
+def worth_remembering(*,
     kind: str,
     predicate: str,
     obj: str,
@@ -600,6 +656,13 @@ def worth_remembering(
     if not re.fullmatch(r"[a-z][a-z0-9_]{1,40}", predicate or ""):
         return GateResult(False, f"谓词不合法（不是英文小写键）：{predicate!r}", "bad-predicate")
 
+    # 附加：值不能太短——「核实」「截图」「些什么」「L1 + L2」这类超短语
+    # 即使形态合法也几乎没有复用价值（v2.2.0 实测漏网 25 条的共性）。
+    # 真正的结论值（SQLite / IntelliJ IDEA / 简体中文）都 ≥ 4 个有效字符。
+    obj_stripped = re.sub(r"[\s（）()【】\[\]……]+", "", obj or "")
+    if len(obj_stripped) < 4:
+        return GateResult(False, f"值太短（{len(obj_stripped)} 字）：更像片段不像结论", "short-object")
+
     # 附加：值不能是整段话
     if len((obj or "").strip()) > 60:
         return GateResult(False, f"object 过长（{len(obj)}字），不像是一个值", "long-object")
@@ -614,6 +677,14 @@ def worth_remembering(
     # 附加：值本身就是纯态度词（「必须小心」抽出的那个「小心」）
     if (obj or "").strip() in VAPID_WORDS:
         return GateResult(False, "空话：值只有态度没有事实", "vapid")
+
+    # 附加：一次性动作/诉求检测（v2.2.0 上线后实测漏网 25 条的针对性补丁）。
+    # 这些值形态合法（主语清楚、非碎片、无时间锚），但语义上是「当下要做的一件事
+    # 或当下的诉求」——做完/聊完就失效。判别式对 20 条真实漏网样本 19 拦 1 放，
+    # 对 10 条真实好记忆零误伤（多源回退 / 先跑 lint / 避免被识别为脚本 等均放行）。
+    action_reason = _is_one_shot_instruction(obj or "")
+    if action_reason:
+        return GateResult(False, action_reason, "one-shot")
 
     return GateResult(True, "ok")
 

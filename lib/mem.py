@@ -878,9 +878,17 @@ def cmd_api(args: argparse.Namespace) -> int:
             return respond({"ok": False, "error": "记忆不存在"})
         if len(text) < 2:
             return respond({"ok": False, "error": "内容太短"})
-        # 跨工作区编辑：当前工作区看不到的条目一律拒绝（fail-closed）
+        # 跨工作区编辑：当前工作区看不到的条目一律拒绝（fail-closed）。
+        # 与 delete 相同的显式确认例外：allow_cross_workspace=true 放行。
         if not _is_visible(row.scope or "global", row.scope_ref or "", visibility):
-            return respond({"ok": False, "error": "这条记忆不属于当前工作区，已拒绝编辑"})
+            if payload.get("allow_cross_workspace") is not True:
+                return respond({
+                    "ok": False,
+                    "error": "这条记忆不属于当前工作区，已拒绝编辑；"
+                             "确认要改请带 allow_cross_workspace=true 重试",
+                    "code": "cross-workspace-denied",
+                    "memory_scope": row.scope or "global",
+                })
 
         cands = _candidates_from_text(text, cwd=req_cwd)
         fields: dict[str, object] = {"content": text}
@@ -898,13 +906,14 @@ def cmd_api(args: argparse.Namespace) -> int:
         # （实测发现：改了内容但 summary 不变 → 面板看着没改、注入的也是旧句子）
         from memory_semantics import Scope, make_summary
 
-        _scope = row["scope"] or "global"
-        _ref = row["scope_ref"] or ""
+        # store.get 返回的是 Memory dataclass，用属性访问（不能 row["scope"]）
+        _scope = row.scope or "global"
+        _ref = row.scope_ref or ""
         fields["summary"] = make_summary(
-            kind=str(fields.get("kind", row["kind"])),
-            predicate=str(fields.get("predicate", row["predicate"])),
-            obj=str(fields.get("object", row["object"])),
-            content=str(fields.get("content", row["content"])),
+            kind=str(fields.get("kind", row.kind)),
+            predicate=str(fields.get("predicate", row.predicate)),
+            obj=str(fields.get("object", row.object)),
+            content=str(fields.get("content", row.content)),
             scope=Scope(_scope, _ref),
         )
 
@@ -986,9 +995,24 @@ def cmd_api(args: argparse.Namespace) -> int:
         row = store.get(memory_id) if memory_id else None
         if row is None:
             return respond({"ok": False, "error": "记忆不存在"})
-        # 跨工作区删除同样 fail-closed
+        # 跨工作区守卫（fail-closed）：可见性不通过就拒绝。
+        # 例外：调用方显式带 allow_cross_workspace=true 时放行——
+        # 面板拿不到 cwd 的场景（旧前端/无头宿主）不该把用户彻底锁死，
+        # 由调用方承担确认责任（面板已有 window.confirm 二次确认）。
         if not _is_visible(row.scope or "global", row.scope_ref or "", visibility):
-            return respond({"ok": False, "error": "这条记忆不属于当前工作区，已拒绝删除"})
+            if payload.get("allow_cross_workspace") is not True:
+                return respond({
+                    "ok": False,
+                    "error": "这条记忆不属于当前工作区，已拒绝删除；"
+                             "确认要删请带 allow_cross_workspace=true 重试",
+                    "code": "cross-workspace-denied",
+                    "memory_scope": row.scope or "global",
+                })
+            store.log(
+                action="update", memory_id=memory_id, target_id=None,
+                candidate={"source": "settings-ui", "cross_workspace": True},
+                decision={}, note="跨工作区删除（调用方显式确认）",
+            )
         conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         conn.commit()
         store.log(
