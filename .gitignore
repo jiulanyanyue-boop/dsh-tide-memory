@@ -53,3 +53,7 @@ update.md
 UPDATE.md
 Update.md
 *.update.md
+
+# 仓库只放插件功能文件，不放测试（用户明确要求）
+tests/
+

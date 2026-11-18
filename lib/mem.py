@@ -44,7 +44,7 @@ from memory_semantics import (  # noqa: E402
 )
 from search import search  # noqa: E402
 from snapshot import snapshot_path_for, write_snapshot  # noqa: E402
-from store import Store, connect, utc_now  # noqa: E402
+from store import Store, connect, ms_to_iso, utc_now  # noqa: E402
 
 def _default_db() -> Path:
     """默认记忆库位置：$DSH_HOME/dsh-tide-memory/memory.db；没有 DSH_HOME 就退回包的 data/。
@@ -428,10 +428,19 @@ def flush_inbox(*, use_llm: bool = False, path: str | None = None) -> dict[str, 
     """消费 dsh-tide-memory 插件写下的 inbox.jsonl，抽取并巩固，然后清空。
 
     幂等性靠巩固层的指纹去重；重复消费不会产生重复记忆。
+
+    历史 bug（v2.3.0 及以前）
+      `use_llm=True` 分支只检查了 `load_llm_config() is not None`，却**没有把
+      构造好的 client 传给 extract()**。而 extract() 的第一段逻辑是
+      `if client is None: return _rule_fallback(...)`——于是配了 LLM 也永远走
+      正则兜底，用户配的 DeepSeek 一次都没被调用过。
+      症状正是：正则抓不到服务器 IP / 账密（该记的不记），
+      又靠 `root_cause`「因为 X」把「服务器我重装」抽进库（不该记的乱记）。
+      修法：真的把 client 传进去，并把抽取引擎如实记进 runs 审计。
     """
     target = inbox_path(path)
     stats = {"entries": 0, "candidates": 0, "insert": 0, "merge": 0,
-             "invalidate": 0, "skip": 0}
+             "invalidate": 0, "skip": 0, "engine": "none", "note": ""}
     if not target.exists():
         return stats
 
@@ -479,18 +488,48 @@ def flush_inbox(*, use_llm: bool = False, path: str | None = None) -> dict[str, 
 
     if use_llm and load_llm_config() is not None:
         from extract_llm import extract  # 延迟导入，避免无 LLM 时加载
+        from llm import LlmClient
 
+        cfg = load_llm_config()
+        # ⚠️ 关键修复：必须把 client 真的传进去。
+        #   旧代码漏了这一行，extract() 里 `if client is None` 直接回退规则抽取，
+        #   配了 LLM 也形同虚设（详见本函数 docstring）。
+        client = LlmClient(cfg)
+        stats["engine"] = "llm"
         candidates = []
+        # 按会话分组批量送：一次只喂 1 条会让 batch_size 白设，
+        # 也浪费 LLM 的上下文理解能力（跨轮对话里的「它」需要前文才认得）。
+        by_session: dict[str, list[dict]] = {}
         for entry in entries:
+            by_session.setdefault(str(entry.get("session", "inbox")), []).append(entry)
+        for sid, group in by_session.items():
+            messages = [
+                {
+                    "seq": e.get("seq"),
+                    "time": ms_to_iso(e["time"]) if e.get("time") else utc_now(),
+                    "text": e["text"],
+                    "cwd": e.get("cwd") or "",
+                }
+                for e in group
+            ]
             report = extract(
-                [{"seq": entry.get("seq"), "time": entry.get("time"), "text": entry["text"],
-                  "cwd": entry.get("cwd") or ""}],
-                session_id=str(entry.get("session", "inbox")),
-                cwd=str(entry.get("cwd") or ""),
+                messages,
+                session_id=sid,
+                client=client,
+                cwd=str(group[0].get("cwd") or ""),
             )
+            stats["note"] = report.note
+            # 用 seq 反查原始条目，把 recorded_at 还原成「说话那一刻」，
+            # 而不是 flush 时的 now——否则所有记忆的时间锚都会漂到批处理时刻。
+            by_seq = {e.get("seq"): e for e in group}
             for cand in report.candidates:
+                entry = by_seq.get(cand.source_seq) or group[0]
+                if entry.get("time"):
+                    cand.recorded_at = ms_to_iso(entry["time"])
                 candidates.append(_place(cand, entry))
     else:
+        stats["engine"] = "rule"
+        stats["note"] = "未配置 LLM，使用规则抽取"
         candidates = []
         for entry in entries:
             for kind, predicate, obj in extract_from_text(entry["text"]):
@@ -504,7 +543,10 @@ def flush_inbox(*, use_llm: bool = False, path: str | None = None) -> dict[str, 
                     quote=entry["text"][:300],
                     source_session=str(entry.get("session", "inbox")),
                     source_seq=entry.get("seq"),
-                    recorded_at=utc_now(),
+                    # 同上：用条目自带时间，别拿 now 覆盖
+                    recorded_at=(
+                        ms_to_iso(entry["time"]) if entry.get("time") else utc_now()
+                    ),
                 )
                 candidates.append(_place(cand, entry))
 
@@ -513,7 +555,16 @@ def flush_inbox(*, use_llm: bool = False, path: str | None = None) -> dict[str, 
         outcome = consolidate(store, cand, decider)
         stats[outcome.action] = stats.get(outcome.action, 0) + 1
 
-    store.finish_run({"inbox": stats["entries"], "candidates": stats["candidates"]})
+    # 引擎与降级原因必须进审计：否则「0 候选」看起来像「这段确实没东西可记」，
+    # 而真相可能是「LLM 根本没被调用」，用户永远查不出问题。
+    store.finish_run(
+        {
+            "inbox": stats["entries"],
+            "candidates": stats["candidates"],
+            "engine": stats["engine"],
+            "note": stats["note"],
+        }
+    )
     try:
         write_snapshot(conn, path=snapshot_path_for(db_path()))
     except Exception:  # noqa: BLE001
@@ -524,11 +575,16 @@ def flush_inbox(*, use_llm: bool = False, path: str | None = None) -> dict[str, 
 
 def cmd_flush_inbox(args: argparse.Namespace) -> int:
     stats = flush_inbox(use_llm=args.llm, path=args.inbox)
+    engine = {"llm": "LLM", "rule": "规则", "none": "无"}.get(stats.get("engine", ""), "?")
     print(
         f"inbox：{stats['entries']} 条输入 → {stats['candidates']} 条候选 "
         f"(insert {stats['insert']} / merge {stats['merge']} / "
-        f"invalidate {stats['invalidate']} / skip {stats['skip']})"
+        f"invalidate {stats['invalidate']} / skip {stats['skip']}) "
+        f"[抽取引擎={engine}]"
     )
+    if stats.get("engine") == "rule" and args.llm:
+        # 传了 --llm 却走了规则：必须说清楚，不能静默降级
+        print(f"⚠️ 已请求 LLM 抽取但仍降级为规则：{stats.get('note') or '未知原因'}")
     return 0
 
 
@@ -555,6 +611,8 @@ _LIST_FIELDS = (
 #: 「测试生成」尤其重要：主人点它时必须保证零副作用。
 READ_ONLY_OPS = frozenset({
     "list", "workspaces", "llm", "engine_status", "engine_test",
+    # 凭据查询：不写记忆库。credential_reveal 只在内存里解密，不落盘。
+    "credential_list", "credential_reveal",
 })
 
 
@@ -1099,6 +1157,75 @@ def cmd_api(args: argparse.Namespace) -> int:
                 "actions": {},
                 "note": "测试未执行成功；未写入任何真实记忆",
             })
+
+    if op == "credential_list":
+        # 只回掩码，永不含明文。面板上列出「记了哪些凭据」用。
+        try:
+            import credential_store
+
+            document = credential_store._load_document()
+            items = []
+            for cred_id, item in document.get("items", {}).items():
+                if not isinstance(item, dict):
+                    continue
+                items.append({
+                    "id": cred_id,
+                    "pointer": f"cred://{cred_id}",
+                    "label": item.get("label", ""),
+                    "hint": item.get("hint", ""),
+                    "masked": item.get("masked", "…"),
+                    "scope": item.get("scope", ""),
+                    "scope_ref": item.get("scope_ref", ""),
+                    "created_at": item.get("created_at", ""),
+                })
+            items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            return respond({
+                "ok": True,
+                "count": len(items),
+                "items": items,
+                "scheme": credential_store.secret_store.active_scheme(),
+                "note": "列表只显示掩码；明文需要显式点「查看」才会解一次",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return respond({"ok": False, "error": f"读取凭据列表失败：{exc}", "items": []})
+
+    if op == "credential_reveal":
+        # 显式查看单条明文。这是唯一会把明文写出进程的入口，
+        # 所以：要求显式 confirm，且响应里带审计标记。
+        cred_id = str(payload.get("id") or "").strip()
+        if not payload.get("confirm"):
+            return respond({
+                "ok": False,
+                "error": "需要 confirm:true 才会解密（防误触把明文甩到界面上）",
+            })
+        try:
+            import credential_store
+
+            plain, meta = credential_store.load_credential(cred_id)
+            return respond({
+                "ok": True,
+                "id": cred_id,
+                "label": meta.get("label", ""),
+                "value": plain,
+                "warning": "这是明文，请勿截图或外传；用完请关闭",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return respond({"ok": False, "error": f"解密失败：{exc}"})
+
+    if op == "credential_delete":
+        cred_id = str(payload.get("id") or "").strip()
+        try:
+            import credential_store
+
+            document = credential_store._load_document()
+            key = cred_id[len("cred://"):] if cred_id.startswith("cred://") else cred_id
+            if key not in document.get("items", {}):
+                return respond({"ok": False, "error": f"凭据不存在：{key}"})
+            document["items"].pop(key)
+            credential_store._save_document(document)
+            return respond({"ok": True, "id": key, "removed": True})
+        except Exception as exc:  # noqa: BLE001
+            return respond({"ok": False, "error": f"删除凭据失败：{exc}"})
 
     if op == "llm-set":
         from llm import LlmConfig, load_llm_config, save_llm_config

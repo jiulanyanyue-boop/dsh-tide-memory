@@ -353,11 +353,28 @@ def enrich_candidate(cand: Candidate) -> tuple[Candidate, Any]:
     """补全归属、可读性、依赖。返回 (候选, GateResult)。
 
     这是「写入前最后一次把话说清楚」的地方：
+      - 凭据脱敏（明文密码/token 换成 cred:// 指针，绝不落库）
       - 过闸门（不值得记的直接否决）
       - 定 scope / scope_ref
       - 生成 summary
       - 推断 depends_on
     """
+    # 0. 凭据脱敏：必须在闸门**之前**。
+    #    闸门会读 object/content 做长度和形态判断，脱敏后长度会变（明文 → cred://xxx），
+    #    先脱敏才能让闸门看到真正要落库的形态。
+    #    这一层放在统一入口，是为了兜住所有来源（LLM / 规则 / 设置页手动添加），
+    #    任何一条路径都不可能把明文凭据漏进 memory.db。
+    try:
+        import credential_store
+
+        cand, redactions = credential_store.redact_candidate(cand)
+        if redactions:
+            cand._redactions = redactions  # 供调用方写审计
+    except Exception:  # noqa: BLE001
+        # 脱敏模块自身故障时**不能放行**：宁可这条记忆不进库，
+        # 也不能冒着明文落盘的风险继续。
+        return cand, GateResult(False, "凭据脱敏失败：拒绝写入以防明文泄露", "redact-failed")
+
     # 1. 闸门
     gate = worth_remembering(
         kind=cand.kind,
@@ -432,6 +449,25 @@ def consolidate(
                 note=f"闸门否决（{gate.code}）：{gate.reason}",
             )
             return Outcome("reject", "", reason=f"闸门否决（{gate.code}）：{gate.reason}")
+
+    # 凭据脱敏审计：只记标签与掩码，**不记明文**。
+    # 没有这条，用户永远不知道「这条记忆里的密码去哪了」。
+    redactions = getattr(cand, "_redactions", None)
+    if redactions:
+        store.log(
+            action="redact",
+            memory_id=None,
+            target_id=None,
+            candidate={
+                "items": [
+                    {"label": r.get("label"), "masked": r.get("masked"),
+                     "cred_id": r.get("cred_id", ""), "stored": r.get("stored")}
+                    for r in redactions
+                ]
+            },
+            decision={"action": "redact", "count": len(redactions)},
+            note=f"凭据已加密隔离（{len(redactions)} 项），记忆库仅存指针与掩码",
+        )
 
     neighbors = store.neighbors(
         kind=cand.kind,

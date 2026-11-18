@@ -451,6 +451,12 @@ CHATTY_PREFIXES = (
 INSTRUCTION_MARKERS = (
     "你自己", "帮我", "告诉我", "你去", "需要修复", "改完之后", "自检一遍",
     "要不要", "能不能", "可以不可以",
+    # ── 祈使/排除句式（v2.3.1 补）──────────────────────────────────
+    # 历史漏网：「你别管真实服务器，只需要回答我问题」抽出了
+    # reflection/must/"回答我问题" —— 这是一句**当下的请求**，
+    # 不是可复用的规则。旧表里没有任何一个词能命中它。
+    "回答我", "别管", "只需要", "不用管", "别问", "只回答", "别废话",
+    "听我说", "先别说", "不要解释", "直接给",
 )
 
 
@@ -478,6 +484,17 @@ _PROCESS_PATTERNS = tuple(
         r"已经(?:.{0,8}?)(?:了)$",
         r"(?:先|再)(?:试|跑|看|改)(?:一下|一遍|看看)",
         r"(?:正在|在)(?:排查|调试|尝试|试|写|改|跑)",
+        # ── 裸「…了」完成态（v2.3.1 补）─────────────────────────────
+        # 历史漏网：「服务器我重装了」。它不是「正在做」，但更不是结论——
+        # 它陈述的是**这次**发生过的一个动作，下次会话毫无复用价值。
+        # 判据：主语性短语 + 动作动词 + 了的完成态，且全程没有结论词。
+        # 之所以不笼统地见「了」就拦：像「链路未清理导致了残留」是结论，
+        # 由 _CONCLUSION_MARKERS（「导致」「原因」）先行放行。
+        r"(?:我|我们|他|她|它|你)?(?:重装|重启|删除|安装|卸载|升级|回滚|迁移|"
+        r"部署|配置|修改|更改|替换|切换|更新|刷新|清理|恢复|导入|导出|备份|"
+        r"拉取|推送|提交|合并|回退|格式化|初始化|重建|编译|打包|发布|上线|"
+        r"跑通|修好|搞定|处理|整理|生成|下载|上传|打开|关闭|启动|停止|登录|登出)"
+        r"(?:了|过了|完了|掉了|好了)",
     )
 )
 
@@ -485,11 +502,53 @@ _PROCESS_PATTERNS = tuple(
 #: 而不是「现在正在做」——即使含过程词也应放行。
 #: 例：「归档→恢复→删除的操作序列曾导致残留，原因是链路未清理」
 #:     「曾导致」是已完成因果，属于可复用经验。
+#:
+#: ⚠️ 这组词只对 **content** 生效，且对 root_cause 谓词永久失效。
+#:    历史 bug：旧版把 obj+content 拼起来查、且无条件放行，于是
+#:    「因为服务器我重装了」里的那个「因为」本身就命中了 root_cause 规则，
+#:    又给自己发了免检通行证——过程叙述的判定整条被跳过，
+#:    「服务器我重装」就这么进了库。免检必须窄到「只免过程判定，
+#:    且只认 content 里真正的结论词」。
 _CONCLUSION_MARKERS = (
     "曾导致", "曾经", "导致过", "原因", "根因", "根本原因", "教训", "经验",
     "因此", "所以必须", "必须", "需要保证", "结论", "规律", "修复后", "已修复",
     "曾经导致", "引发", "造成了",
 )
+
+#: 这些谓词抽出来的值天生容易是**一次性事件的起因**，需要额外警惕。
+#: 注意：这**不是**免检开关——「链路未清理（导致残留）」是真正可复用的
+#: 因果结论，必须放行。真正的一次性事件靠下面的形态判定拦。
+_NO_EXEMPT_PREDICATES = frozenset()  # 保留位：按「谓词」一刀切会误伤真结论
+
+#: 句子片段判据：值里出现人称代词 = 这是半句话，不是一个「值」。
+#:
+#: 这是拦住「服务器我重装」「回答我问题」最稳的一条。
+#: 好的记忆 object 永远是一个**值**（root / 192.168.120.52:8003 / 简体中文 /
+#: IntelliJ IDEA），而「服务器我重装」是「因为服务器我重装了」被截下的半句，
+#: 「回答我问题」是「你别管真实服务器，只需要回答我问题」被截下的半句。
+#: 它们共同点：带着第一/第二人称代词，脱离原句就没意义。
+#: 而「链路未清理」（真正的因果结论）不含代词，不受影响。
+_FRAGMENT_PRONOUNS = ("我", "你", "咱")
+
+#: 环境事实类谓词：它们的值天生短、精确、信息密度高。
+#: 给这类开「短值豁免」——账号 root、主机名 db1 都该记。
+ENV_FACT_PREDICATES = frozenset({
+    "ssh_endpoint", "host_ip", "server_ip", "hostname", "login_account",
+    "login_user", "ssh_port", "service_port", "db_host", "db_port",
+    "db_name", "db_user", "conn_string", "endpoint", "base_url",
+    "deploy_target", "deploy_path", "environment", "server_role",
+    "db_engine", "api_key", "login_credential",
+})
+
+#: 身份类谓词：值是姓名/昵称/语言这类**短但完整**的原子值。
+#: 「刘润」「中文」「简体中文」都只有 2~4 字，却是最稳的长期事实，
+#: 绝不能被「值太短」拦掉——这是把闸门修过头的典型误伤。
+IDENTITY_PREDICATES = frozenset({
+    "user_name", "nickname", "user_job", "responds_in", "prefers_language",
+    "prefers_report_language", "prefers_theme", "prefers_editor",
+    "user_city", "user_company", "user_role", "prefers_os",
+    "prefers_shell", "prefers_db", "prefers_ide",
+})
 
 #: 时间锚：带这些词意味着「只在此刻成立」，脱离上下文就没意义。
 #: 注意「今天开始用 neovim」这类能归一化成一辈子的偏好，靠 CONTEXTUAL_TENSE
@@ -575,6 +634,20 @@ _BARE_PRODUCT_NAMES = {
 }
 
 
+#: 名词性成分：值以动作词开头、但后面跟的是这些名词时，它是**名词短语**
+#: 而不是动作指令。「下载文件夹」= 一个目录，不是「去下载」这个动作。
+_NOUN_SUFFIXES = (
+    "文件夹", "目录", "文件", "路径", "列表", "按钮", "页面", "接口", "记录",
+    "面板", "设置", "选项", "字段", "清单", "位置", "地址", "名称", "名字",
+    "文档", "配置", "开关", "主题", "风格", "格式", "版本", "日志",
+)
+
+
+def _is_noun_phrase(t: str) -> bool:
+    """值是不是一个名词短语（哪怕它以动作词开头）。"""
+    return any(t.endswith(suffix) or suffix in t[-4:] for suffix in _NOUN_SUFFIXES)
+
+
 def _is_one_shot_instruction(obj: str) -> str | None:
     """一次性动作/诉求检测：返回拒绝理由；None 表示不是。
 
@@ -586,7 +659,9 @@ def _is_one_shot_instruction(obj: str) -> str | None:
     t = (obj or "").strip()
     if not t:
         return None
-    if any(t.startswith(v) for v in ACTION_HEADS):
+    # 以动作词开头，但整体是名词短语 -> 不是动作指令
+    # （「下载文件夹」是用户的交付习惯，「下载」只是词头）
+    if any(t.startswith(v) for v in ACTION_HEADS) and not _is_noun_phrase(t):
         return "动作指令：描述要做的一件事，不是稳定规则"
     if any(h in t for h in ONE_SHOT_HINTS):
         return "一次性语境：问题解决后这条就失效了"
@@ -641,12 +716,32 @@ def worth_remembering(*,
     # 问 4：可复用吗？——过程叙述与对话碎片一律丢
     if _is_chat_fragment(obj) or _is_chat_fragment(content):
         return GateResult(False, "对话碎片：没有可复用的信息", "fragment")
-    # 结论回指要看「object + content」整体：object 常常只是个短语
-    #（如「链路未清理」），结论性其实在 content 里（「曾导致…根因…」）。
-    if any(m in text for m in _CONCLUSION_MARKERS):
-        pass  # 整条是结论，跳过过程判定
-    elif _is_process_narrative(content) or _is_process_narrative(obj):
-        return GateResult(False, "过程叙述：正在做/还没做，不是结论", "process")
+
+    # 问 4.5：这个 object 是「一个值」还是「半句话」？
+    #
+    # 这是拦住「服务器我重装」「回答我问题」最稳的一条——
+    # 它俩形态合法（有主语、无时间锚、够长），但都是半句。
+    # 判据两条：
+    #   ① 值里带人称代词 → 「因为服务器我重装**了**」被截下的半句
+    #   ② 值是「主谓宾」结构而非名词短语 → 后半段出现动作动词
+    # 好记忆的 object 永远是名词性的值（root / 简体中文 / IntelliJ IDEA /
+    # 192.168.120.52:8003 / 链路未清理），碰不到这两条。
+    if _is_sentence_fragment(obj):
+        return GateResult(False, "值不是名词短语：是句子被截下的半截", "fragment-sentence")
+
+    # 结论免检：**只看 content**。
+    #
+    # 历史 bug：旧版把 obj+content 拼起来查结论词、且无条件跳过过程判定。
+    # 「服务器我重装」的 content 是「用户提到：服务器我重装」，
+    # 而它的 predicate 恰恰是 root_cause（由「因为」触发）——
+    # 「因为」既是抽取规则的触发器，又被当成了结论词，
+    # 于是这条过程叙述一路免检通关。
+    # 现在：只认 content 里真正的结论词，且该词必须**真的在陈述结论**
+    # （「导致/根因/教训」），而不是抽取规则的触发词本身。
+    exempt = any(m in content for m in _CONCLUSION_MARKERS)
+    if not exempt:
+        if _is_process_narrative(content) or _is_process_narrative(obj):
+            return GateResult(False, "过程叙述：正在做/还没做，不是结论", "process")
 
     # 问 5：无时间锚吗？
     if _has_time_anchor(obj) or _has_time_anchor(content):
@@ -659,9 +754,23 @@ def worth_remembering(*,
     # 附加：值不能太短——「核实」「截图」「些什么」「L1 + L2」这类超短语
     # 即使形态合法也几乎没有复用价值（v2.2.0 实测漏网 25 条的共性）。
     # 真正的结论值（SQLite / IntelliJ IDEA / 简体中文）都 ≥ 4 个有效字符。
+    #
+    # ⚠️ 例外：环境事实类谓词的「值」本来就短且精确。
+    #    账号 root、主机名 db1、端口 8003 —— 4 字门槛会把**最该记的**拦掉。
+    #    这不是放宽标准，是承认「短」有两种：碎片式短（无信息）与
+    #    标识符式短（信息密度极高）。判据是「含 ASCII 标识符」而不是长度。
     obj_stripped = re.sub(r"[\s（）()【】\[\]……]+", "", obj or "")
     if len(obj_stripped) < 4:
-        return GateResult(False, f"值太短（{len(obj_stripped)} 字）：更像片段不像结论", "short-object")
+        # 短值的两种合法形态：
+        #   ① 环境事实：标识符式短值（root / d1 / 192.168.120.52:8003）
+        #   ② 身份事实：姓名/昵称/语言这类原子值（刘润 / 中文）
+        # 两种都不是「碎片」，是无歧义、无冗余的完整值。
+        exempt = (
+            (predicate in ENV_FACT_PREDICATES and _is_identifier_value(obj))
+            or (predicate in IDENTITY_PREDICATES and _is_atomic_value(obj))
+        )
+        if not exempt:
+            return GateResult(False, f"值太短（{len(obj_stripped)} 字）：更像片段不像结论", "short-object")
 
     # 附加：值不能是整段话
     if len((obj or "").strip()) > 60:
@@ -687,6 +796,42 @@ def worth_remembering(*,
         return GateResult(False, action_reason, "one-shot")
 
     return GateResult(True, "ok")
+
+
+def _is_sentence_fragment(obj: str) -> bool:
+    """判断 object 是「一个值」还是「半句话」。
+
+    只看 object，不看 content——content 本来就该是一句完整陈述，
+    而 object 必须是名词性的值。
+
+    两条判据：
+      ① 含第一/第二人称代词：「服务器我重装」「回答我问题」
+         好的值不会带「我」「你」。
+      ② 名词短语里塞进了动作动词并且像主谓结构。
+         这条更保守：只在「前半是名词、后半是动词+了/过」时触发，
+         避免误伤「先跑 lint」「避免被识别为脚本」这类规则型结论。
+    """
+    t = (obj or "").strip()
+    if not t:
+        return False
+    if any(p in t for p in _FRAGMENT_PRONOUNS):
+        return True
+    # 「服务器我重装」的加强判据：名词 + 动词完成态，中间没有任何连接词
+    if _PREDICATE_TAIL_RE.search(t):
+        return True
+    return False
+
+
+#: 名词短语尾部挂着「动作+了/过」= 这是叙述句不是值。
+#: 例：「服务器我重装」「密码改过」「配置换了」
+_PREDICATE_TAIL_RE = re.compile(
+    r"^[^\s]{1,10}"
+    r"(?:重装|重启|删除|安装|卸载|升级|回滚|迁移|部署|配置|修改|更改|替换|"
+    r"切换|更新|刷新|清理|恢复|导入|导出|备份|拉取|推送|提交|合并|回退|"
+    r"格式化|初始化|重建|编译|打包|发布|上线|跑通|修好|搞定|处理|整理|"
+    r"生成|下载|上传|打开|关闭|启动|停止|登录|登出)"
+    r"(?:了|过|完|掉|好)$"
+)
 
 
 def _has_vague_subject(text: str) -> bool:
@@ -725,6 +870,58 @@ VAPID_TAILS = (
 VAPID_WORDS = {
     "小心", "注意", "当心", "留意", "谨慎", "认真", "仔细", "严谨", "用心",
     "重视", "关注", "在意", "上心", "留神", "警惕",
+}
+
+
+#: 标识符式短值：纯 ASCII 标识符 / IP / 端口 / 路径。
+#: 用于给环境事实类谓词开短值豁免——「root」「db1」「192.168.120.52」
+#: 都很短，但信息密度极高，绝不该被 4 字门槛拦掉。
+_IDENTIFIER_SHAPE_RE = re.compile(
+    r"^(?:"
+    r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?"   # IPv4[:port]
+    r"|[A-Za-z0-9_][A-Za-z0-9_.\-:/\\]{1,}$"   # 标识符 / 主机名 / 路径 / URL
+    r")$"
+)
+
+
+def _is_identifier_value(text: str) -> bool:
+    """值是不是一个「标识符式」的短值（而不是无信息的碎片）。
+
+    「核实」「截图」这种碎片是中文纯动词，永远不匹配；
+    「root」「db1」「127.0.0.1」「192.168.120.52:8003」全部匹配。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 120:
+        return False
+    return bool(_IDENTIFIER_SHAPE_RE.match(t))
+
+
+def _is_atomic_value(text: str) -> bool:
+    """短但完整的原子值：纯中文的姓名、昵称、语言名等。
+
+    与 _is_identifier_value 互补——那条管 ASCII 标识符，
+    这条管「刘润」「中文」「简体中文」这类纯中文原子值。
+
+    判据刻意保守，避免把碎片放进来：
+      · 2~12 个汉字，无标点、无空白
+      · 不是纯动作词（「核实」「截图」这类已在 ACTION_HEADS / VAPID 里）
+    """
+    t = (text or "").strip()
+    if not (2 <= len(t) <= 12):
+        return False
+    if not re.fullmatch(r"[\u4e00-\u9fff]+", t):
+        return False
+    if t in VAPID_WORDS or t in _NOT_ATOMIC_WORDS:
+        return False
+    return True
+
+
+#: 中文里「看着像值、其实是动作/虚词」的词。原子值豁免要排除它们。
+_NOT_ATOMIC_WORDS = {
+    "核实", "截图", "些什么", "处理", "整理", "生成", "配置", "检查", "确认",
+    "测试", "部署", "安装", "打开", "关闭", "启动", "停止", "下载", "上传",
+    "参考", "支持", "获取", "触发", "修复", "排查", "验收", "实现", "运行",
+    "执行", "点击", "填写", "定位", "登录", "试试",
 }
 
 
@@ -832,6 +1029,30 @@ PREDICATE_LABELS = {
     "dsh_memento_maintenance": "memento 维护状态",
     "memory_recall_long_text_penalty": "检索打分缺陷",
     "memory_needs_scope_and_lifecycle": "记忆结构缺陷",
+    # ── 环境事实（v2.3.1 新增：服务器地址与账号属于必记内容）──────
+    "ssh_endpoint": "服务器地址",
+    "host_ip": "主机地址",
+    "server_ip": "服务器 IP",
+    "hostname": "主机名",
+    "ssh_port": "SSH 端口",
+    "service_port": "服务端口",
+    "login_account": "登录账号",
+    "login_user": "登录用户",
+    "login_credential": "登录凭据",
+    "api_key": "接口密钥",
+    "db_host": "数据库地址",
+    "db_port": "数据库端口",
+    "db_name": "数据库名",
+    "db_user": "数据库账号",
+    "conn_string": "连接串",
+    "endpoint": "服务端点",
+    "base_url": "接口地址",
+    "deploy_path": "部署目录",
+    "deploy_target": "部署目标",
+    "environment": "环境类型",
+    "server_role": "服务器用途",
+    "db_engine": "数据库类型",
+    "test_prerequisite": "测试前置条件",
 }
 
 
@@ -853,12 +1074,20 @@ def make_summary(
     scope: Scope | None = None,
 ) -> str:
     """生成一句给主人看的人话。优先用 content，缺了就用谓词标签拼。"""
+    import credential_store  # 局部导入：只在生成摘要时需要
+
     body = (content or "").strip()
     # content 只是 object 的复读 -> 不算有效摘要
     if not body or body.strip() == (obj or "").strip():
         body = f"{predicate_label(predicate)}：{(obj or '').strip()}"
     # 去掉「用户提到：」这类无用前缀
     body = re.sub(r"^(用户|我)(提到|说|表示|想要|希望)[:：]\s*", "", body)
+    # 凭据指针在面板上显示成掩码，别把 cred://xxx 这种内部 id 露给主人看
+    body = re.sub(
+        r"cred://[A-Za-z0-9_]+",
+        lambda m: credential_store.masked_of(m.group(0)),
+        body,
+    )
     if scope is not None and scope.scope != SCOPE_GLOBAL:
         body = f"［{scope.describe()}］{body}"
     return body.strip()[:200]
